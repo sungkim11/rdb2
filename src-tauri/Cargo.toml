@@ -1,0 +1,21 @@
+[package]
+name = "rdb2-tauri"
+version = "0.1.0"
+description = "Desktop Postgres client built with Tauri"
+authors = ["Sung Kim"]
+edition = "2021"
+
+[lib]
+name = "rdb2_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+chrono = { version = "0.4.40", features = ["serde"] }
+postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tauri = { version = "2.3.1", features = [] }
+uuid = { version = "1.16.0", features = ["serde", "v4"] }

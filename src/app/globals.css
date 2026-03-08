@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg: #1e1e1e;
+  --bg-elevated: #252526;
+  --bg-sidebar: #181818;
+  --bg-editor: #1e1e1e;
+  --bg-tab: #2d2d2d;
+  --bg-input: #2a2d2e;
+  --line: #2d2d30;
+  --line-soft: #252526;
+  --text: #cccccc;
+  --muted: #8b949e;
+  --accent: #3794ff;
+  --accent-soft: rgba(55, 148, 255, 0.14);
+  --danger: #f48771;
+  --selection: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: "Segoe UI", sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+  border-radius: 0;
+}
+
+textarea {
+  resize: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3e3e42;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--bg-input);
+  color: var(--text);
+  padding: 0.45rem 0.65rem;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
