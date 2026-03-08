@@ -7,12 +7,13 @@
   --bg: #1e1e1e;
   --bg-elevated: #252526;
   --bg-sidebar: #181818;
-  --bg-editor: #1e1e1e;
+  --bg-editor: #242424;
   --bg-tab: #2d2d2d;
   --bg-input: #2a2d2e;
   --line: #2d2d30;
   --line-soft: #252526;
   --text: #cccccc;
+  --text-bright: #e8e8e8;
   --muted: #8b949e;
   --accent: #3794ff;
   --accent-soft: rgba(55, 148, 255, 0.14);
@@ -33,7 +34,7 @@ body {
 }
 
 body {
-  font-family: "Segoe UI", sans-serif;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
 button,
@@ -64,6 +65,15 @@ textarea {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: #222222;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #3e3e42;
+  border-radius: 4px;
 }
 
 .input {

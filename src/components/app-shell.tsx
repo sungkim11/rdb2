@@ -4,6 +4,7 @@ import type { PropsWithChildren, ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { isTauriRuntime, tauriApi } from '@/lib/tauri';
 import type {
+  ActiveConnectionSummary,
   AppSnapshot,
   ConnectionInput,
   QueryResult,
@@ -43,7 +44,6 @@ interface QueryHistoryEntry {
   resultMeta: string;
 }
 
-type WorkspaceTab = 'results' | 'schema' | 'recent';
 type TopMenu = 'file' | 'sql' | 'view' | null;
 
 type EditorTab = {
@@ -80,9 +80,7 @@ export function AppShell() {
   const [openMenu, setOpenMenu] = useState<TopMenu>(null);
   const [draft, setDraft] = useState<ConnectionInput>(EMPTY_CONNECTION);
   const [persistConnection, setPersistConnection] = useState(true);
-  const [schemaFilter, setSchemaFilter] = useState('');
   const [desktopReady, setDesktopReady] = useState(false);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('results');
   const [editorTabs, setEditorTabs] = useState<EditorTab[]>([
     {
       id: 'tab-default-query',
@@ -93,8 +91,9 @@ export function AppShell() {
     },
   ]);
   const [activeEditorTabId, setActiveEditorTabId] = useState('tab-default-query');
-  const [resultFilter, setResultFilter] = useState('');
   const [sortState, setSortState] = useState<SortState>(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const PAGE_SIZE = 500;
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [dragState, setDragState] = useState<DragState>(null);
 
@@ -103,10 +102,7 @@ export function AppShell() {
     [activeEditorTabId, editorTabs],
   );
 
-  const filteredTree = useMemo(
-    () => filterTree(snapshot?.databaseTree ?? [], schemaFilter),
-    [schemaFilter, snapshot?.databaseTree],
-  );
+  const databaseTree = snapshot?.databaseTree ?? [];
 
   const processedResult = useMemo(() => {
     const result = activeEditorTab?.result;
@@ -115,10 +111,6 @@ export function AppShell() {
     }
 
     let rows = result.rows;
-    if (resultFilter.trim()) {
-      const needle = resultFilter.trim().toLowerCase();
-      rows = rows.filter((row) => row.some((cell) => cell.toLowerCase().includes(needle)));
-    }
 
     if (sortState) {
       rows = [...rows].sort((left, right) => {
@@ -132,16 +124,23 @@ export function AppShell() {
       });
     }
 
+    const totalRows = rows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+    const safePage = Math.min(currentPage, totalPages - 1);
+    const pagedRows = rows.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
     return {
       ...result,
-      rows,
-      rowCount: rows.length,
-      notice:
-        resultFilter.trim() || sortState
-          ? `View rows ${rows.length} of ${result.rows.length}`
-          : result.notice,
+      rows: pagedRows,
+      rowCount: totalRows,
+      totalPages,
+      currentPage: safePage,
+      pageStart: safePage * PAGE_SIZE,
+      notice: sortState
+        ? `View rows ${totalRows} of ${result.rows.length}`
+        : result.notice,
     };
-  }, [activeEditorTab?.result, resultFilter, sortState]);
+  }, [activeEditorTab?.result, sortState, currentPage]);
 
   useEffect(() => {
     void refresh();
@@ -198,6 +197,7 @@ export function AppShell() {
       current.map((tab) => (tab.id === activeEditorTab.id ? { ...tab, ...patch } : tab)),
     );
   }
+
 
   function openNewQueryTab(sql = QUERY_PRESETS[0].sql) {
     const id = makeTabId('query');
@@ -268,8 +268,8 @@ export function AppShell() {
   }
 
   function clearResultView() {
-    setResultFilter('');
     setSortState(null);
+    setCurrentPage(0);
   }
 
   function toggleSort(columnIndex: number) {
@@ -390,9 +390,8 @@ export function AppShell() {
       setLoading('Running SQL...');
       setError(null);
       const nextResult = await tauriApi.runQuery(activeEditorTab.sql, 500);
-      updateActiveTab({ result: nextResult });
+      updateActiveTab({ result: nextResult, title: summarizeSql(activeEditorTab.sql) });
       clearResultView();
-      setWorkspaceTab('results');
       setShowSqlEditor(false);
       setOpenMenu(null);
       setQueryHistory((current) => [
@@ -419,7 +418,6 @@ export function AppShell() {
       const sql = `select *\nfrom ${schema}.${table}\nlimit 200;`;
       openOrActivateTableTab(schema, table, sql, nextResult);
       clearResultView();
-      setWorkspaceTab('results');
       setQueryHistory((current) => [
         {
           id: crypto.randomUUID(),
@@ -437,21 +435,21 @@ export function AppShell() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--bg)] text-[13px] text-[var(--text)]" onClick={() => openMenu && setOpenMenu(null)}>
-      <div className="flex min-h-screen flex-col">
+    <main className="h-screen bg-[var(--bg)] text-[13px] text-[var(--text)]" onClick={() => { if (openMenu) setOpenMenu(null); }}>
+      <div className="flex h-screen flex-col overflow-hidden">
         <header className="relative flex h-9 items-center justify-between border-b border-[var(--line)] bg-[var(--bg-elevated)] px-3">
           <div className="flex min-w-0 items-center gap-4" onClick={(event) => event.stopPropagation()}>
-            <div className="bg-[var(--accent)] px-2 py-[3px] font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+            <div className="bg-[var(--accent)] px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.14em] text-white">
               rdb2
             </div>
-            <div className="flex items-center gap-1 font-mono text-[12px] text-[var(--muted)]">
+            <div className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
               <MenuButton active={openMenu === 'file'} label="File" onClick={() => setOpenMenu((current) => (current === 'file' ? null : 'file'))} />
               <MenuButton active={openMenu === 'sql'} label="SQL" onClick={() => setOpenMenu((current) => (current === 'sql' ? null : 'sql'))} />
               <MenuButton active={openMenu === 'view'} label="View" onClick={() => setOpenMenu((current) => (current === 'view' ? null : 'view'))} />
             </div>
           </div>
 
-          <div className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)]">
+          <div className="truncate text-[11px] uppercase tracking-[0.12em] text-[var(--muted)]">
             {snapshot?.activeConnection ? snapshot.activeConnection.database : 'No active database'}
           </div>
 
@@ -472,9 +470,8 @@ export function AppShell() {
               ) : null}
               {openMenu === 'view' ? (
                 <MenuPanel>
-                  <MenuItem label="Show Results" onClick={() => { setWorkspaceTab('results'); setOpenMenu(null); }} />
-                  <MenuItem label="Show Schema" onClick={() => { setWorkspaceTab('schema'); setOpenMenu(null); }} />
-                  <MenuItem label="Show Recent" onClick={() => { setWorkspaceTab('recent'); setOpenMenu(null); }} />
+                  <MenuItem label="Clear Results" onClick={() => { clearResultView(); setOpenMenu(null); }} />
+                  <MenuItem label="Export CSV" onClick={() => { exportCurrentResult(); setOpenMenu(null); }} />
                 </MenuPanel>
               ) : null}
             </div>
@@ -482,35 +479,25 @@ export function AppShell() {
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          <aside className="flex shrink-0 flex-col border-r border-[var(--line)] bg-[var(--bg-sidebar)]" style={{ width: sidebarWidth }}>
-            <div className="border-b border-[var(--line)] px-3 py-2">
-              <div className="text-sm font-medium text-[var(--text)]">Database Explorer</div>
-            </div>
-
-            <div className="flex items-center gap-1 border-b border-[var(--line)] px-2 py-1.5 font-mono text-[11px] text-[var(--muted)]">
-              <ToolbarIconButton onClick={openNewConnectionModal} title="New connection"><PlusIcon /></ToolbarIconButton>
-              <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
-              <ToolbarIconButton onClick={() => setWorkspaceTab('schema')} title="Open schema tab"><PanelIcon /></ToolbarIconButton>
-            </div>
-
-            <div className="flex-1 overflow-auto px-2 py-2">
-              <div className="mb-2">
-                <input className="input" onChange={(event) => setSchemaFilter(event.target.value)} placeholder="Filter" value={schemaFilter} />
+          <aside className="flex min-h-0 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--bg-sidebar)] text-[12px]" style={{ width: sidebarWidth }}>
+            <div className="flex h-1/4 flex-col border-b border-[var(--line)]">
+              <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
+                <div className="font-medium text-[var(--text)]">Connections</div>
+                <ToolbarIconButton onClick={openNewConnectionModal} title="New connection"><PlusIcon /></ToolbarIconButton>
               </div>
-
-              <ExplorerSection title="Connections">
+              <div className="sidebar-scroll flex-1 overflow-y-scroll px-2 py-2">
                 {snapshot?.savedConnections.length ? (
                   <div>
                     {snapshot.savedConnections.map((connection) => {
                       const active = snapshot.activeConnection?.id === connection.id;
                       return (
-                        <div className={classNames('group flex items-center gap-2 px-1 py-1 text-sm', active && 'bg-[var(--selection)]')} key={connection.id}>
+                        <div className={classNames('group flex items-center gap-2 px-1 py-1', active && 'bg-[var(--selection)]')} key={connection.id}>
                           <ExplorerIcon><ConnectionIcon active={active} /></ExplorerIcon>
                           <button className="min-w-0 flex-1 truncate text-left text-[var(--text)]" onClick={() => void handleActivate(connection)} type="button">
                             {connection.name || `${connection.user}@${connection.host}`}
                           </button>
-                          <button className="hidden text-[11px] text-[var(--muted)] group-hover:block" onClick={() => openEditConnectionModal(connection)} type="button">e</button>
-                          <button className="hidden text-[11px] text-[var(--danger)] group-hover:block" onClick={() => void handleDeleteConnection(connection)} type="button">x</button>
+                          <button className="hidden text-[var(--muted)] group-hover:block" onClick={() => openEditConnectionModal(connection)} type="button">e</button>
+                          <button className="hidden text-[var(--danger)] group-hover:block" onClick={() => void handleDeleteConnection(connection)} type="button">x</button>
                         </div>
                       );
                     })}
@@ -518,32 +505,25 @@ export function AppShell() {
                 ) : (
                   <EmptyInline message="No saved connections" />
                 )}
-              </ExplorerSection>
+              </div>
+            </div>
 
-              <ExplorerSection title="Objects">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex items-center gap-1 border-b border-[var(--line)] px-2 py-1.5 text-[var(--muted)]">
+                <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
+                <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+              </div>
+              <div className="sidebar-scroll min-h-0 flex-1 overflow-y-scroll px-2 py-2">
                 {snapshot?.activeConnection ? (
-                  <div className="mb-2 px-1 text-[12px] text-[var(--muted)]">
-                    <div className="flex items-center gap-2 py-1">
-                      <ExplorerIcon><ServerIcon /></ExplorerIcon>
-                      <span className="truncate">{snapshot.activeConnection.host}</span>
-                    </div>
-                    <div className="flex items-center gap-2 py-1 pl-4">
-                      <ExplorerIcon><DatabaseIcon /></ExplorerIcon>
-                      <span className="truncate">{snapshot.activeConnection.database}</span>
-                    </div>
-                  </div>
-                ) : null}
-
-                {snapshot?.activeConnection ? (
-                  filteredTree.length ? (
-                    <SchemaTree tree={filteredTree} onPreview={handlePreviewTable} />
-                  ) : (
-                    <EmptyInline message="No matching tables" />
-                  )
+                  <DatabaseTree
+                    connection={snapshot.activeConnection}
+                    tree={databaseTree}
+                    onPreview={handlePreviewTable}
+                  />
                 ) : (
                   <EmptyInline message="Connect to browse schema" />
                 )}
-              </ExplorerSection>
+              </div>
             </div>
           </aside>
 
@@ -555,8 +535,8 @@ export function AppShell() {
                 {editorTabs.map((tab) => (
                   <button
                     className={classNames(
-                      'group flex min-w-[160px] max-w-[280px] items-center gap-2 border-r border-[var(--line)] px-3 py-1.5 text-left',
-                      tab.id === activeEditorTab?.id ? 'bg-[var(--bg-editor)]' : 'bg-[var(--bg-tab)] text-[var(--muted)]',
+                      'group flex min-w-[160px] max-w-[360px] items-center gap-2 border-r border-[var(--line)] px-3 py-1.5 text-left',
+                      tab.id === activeEditorTab?.id ? 'bg-[var(--bg-editor)] text-[var(--text-bright)]' : 'bg-[var(--bg-tab)] text-[var(--muted)]',
                     )}
                     key={tab.id}
                     onClick={() => setActiveEditorTabId(tab.id)}
@@ -565,7 +545,9 @@ export function AppShell() {
                     <span className="text-[11px] text-[var(--muted)]">
                       {tab.kind === 'table' ? <TableIcon /> : <QueryIcon />}
                     </span>
-                    <span className="truncate font-mono text-[12px]">{tab.title}</span>
+                    <span className="truncate font-mono text-[12px]">
+                      {tab.title}
+                    </span>
                     <span
                       className="ml-auto shrink-0 text-[var(--muted)] hover:text-[var(--text)]"
                       onClick={(event) => {
@@ -581,72 +563,34 @@ export function AppShell() {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex border-b border-[var(--line)] bg-[var(--bg-tab)]">
-                <TabButton active={workspaceTab === 'results'} onClick={() => setWorkspaceTab('results')}>Results</TabButton>
-                <TabButton active={workspaceTab === 'schema'} onClick={() => setWorkspaceTab('schema')}>Schema</TabButton>
-                <TabButton active={workspaceTab === 'recent'} onClick={() => setWorkspaceTab('recent')}>Recent</TabButton>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-auto bg-[var(--bg-editor)] p-2">
-                {workspaceTab === 'results' ? (
-                  processedResult ? (
-                    <div>
-                      <ResultsToolbar
-                        filterValue={resultFilter}
-                        onClear={clearResultView}
-                        onExport={exportCurrentResult}
-                        onFilterChange={setResultFilter}
-                        result={processedResult}
-                        sortState={sortState}
-                        tab={activeEditorTab}
-                      />
-                      <ResultsTable result={processedResult} sortState={sortState} onSort={toggleSort} />
-                    </div>
-                  ) : (
-                    <WorkspaceEmpty title="No results" body="Run a query or click a table from the explorer." />
-                  )
-                ) : null}
-
-                {workspaceTab === 'schema' ? (
-                  snapshot?.activeConnection ? (
-                    filteredTree.length ? (
-                      <SchemaTree tree={filteredTree} onPreview={handlePreviewTable} dense />
-                    ) : (
-                      <WorkspaceEmpty title="No matches" body="Adjust the schema filter in the explorer." />
-                    )
-                  ) : (
-                    <WorkspaceEmpty title="No database" body="Connect to browse schema." />
-                  )
-                ) : null}
-
-                {workspaceTab === 'recent' ? (
-                  queryHistory.length ? (
-                    <div className="border border-[var(--line)]">
-                      {queryHistory.map((entry) => (
-                        <button
-                          className="flex w-full items-center justify-between border-b border-[var(--line-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--selection)]"
-                          key={entry.id}
-                          onClick={() => {
-                            openNewQueryTab(entry.sql);
-                            setWorkspaceTab('results');
-                          }}
-                          type="button"
-                        >
-                          <span className="truncate text-sm text-[var(--text)]">{entry.title}</span>
-                          <span className="ml-4 shrink-0 font-mono text-[11px] text-[var(--muted)]">{entry.resultMeta}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <WorkspaceEmpty title="Nothing yet" body="Executed queries appear here." />
-                  )
-                ) : null}
-              </div>
+              {processedResult ? (
+                <>
+                  <div className="min-h-0 flex-1 overflow-scroll bg-[var(--bg-editor)]">
+                    <ResultsTable
+                      result={processedResult}
+                      sortState={sortState}
+                      onSort={toggleSort}
+                      rowOffset={processedResult.pageStart}
+                    />
+                  </div>
+                  <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[var(--line)] bg-[var(--bg-tab)] px-3 py-1.5 text-[14px] text-[var(--muted)]">
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => setCurrentPage(0)} type="button">{'<<'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => setCurrentPage((p) => p - 1)} type="button">{'<'}</button>
+                    <span className="font-bold">{processedResult.rowCount > 0 ? `${(processedResult.pageStart + 1).toLocaleString()}–${Math.min(processedResult.pageStart + PAGE_SIZE, processedResult.rowCount).toLocaleString()}` : '0'} of {processedResult.rowCount.toLocaleString()}</span>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => setCurrentPage((p) => p + 1)} type="button">{'>'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => setCurrentPage(processedResult.totalPages - 1)} type="button">{'>>'}</button>
+                  </div>
+                </>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-auto bg-[var(--bg-editor)] p-2">
+                  <WorkspaceEmpty title="No results" body="Run a query or click a table from the explorer." />
+                </div>
+              )}
             </div>
           </section>
         </div>
 
-        <footer className="flex h-6 items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--bg-elevated)] px-3 font-mono text-[11px] text-[var(--muted)]">
+        <footer className="flex h-6 items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--bg-elevated)] px-3 text-[11px] text-[var(--muted)]">
           <div className="truncate">{loading || error || (snapshot?.activeConnection ? `Connected as ${snapshot.activeConnection.user}` : 'Waiting for a database connection.')}</div>
           <div>{error ? 'error' : snapshot?.activeConnection ? 'online' : desktopReady ? 'offline' : 'preview'}</div>
         </footer>
@@ -656,14 +600,14 @@ export function AppShell() {
         <div className="fixed inset-0 z-20 grid place-items-center bg-[rgba(0,0,0,0.46)] p-4">
           <div className="w-full max-w-5xl border border-[var(--line)] bg-[var(--bg-elevated)]">
             <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-2.5">
-              <div className="flex items-center gap-2 font-mono text-[12px] text-[var(--text)]">
+              <div className="flex items-center gap-2 text-[12px] text-[var(--text)]">
                 <span className="text-[var(--muted)]">{activeEditorTab.kind === 'table' ? <TableIcon /> : <QueryIcon />}</span>
                 <span>{activeEditorTab.title}</span>
               </div>
               <div className="flex items-center gap-2">
                 {QUERY_PRESETS.map((preset) => (
                   <button
-                    className="border border-[var(--line)] bg-[var(--bg-input)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+                    className="border border-[var(--line)] bg-[var(--bg-input)] px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
                     key={preset.label}
                     onClick={() => updateActiveTab({ sql: preset.sql })}
                     type="button"
@@ -746,7 +690,7 @@ function MenuItem({ label, shortcut, onClick }: { label: string; shortcut?: stri
       type="button"
     >
       <span>{label}</span>
-      {shortcut ? <span className="ml-6 font-mono text-[11px] text-[var(--muted)]">{shortcut}</span> : null}
+      {shortcut ? <span className="ml-6 text-[11px] text-[var(--muted)]">{shortcut}</span> : null}
     </button>
   );
 }
@@ -787,45 +731,23 @@ function InlineTextButton({ children, onClick }: PropsWithChildren<{ onClick: ()
   );
 }
 
-function ExplorerSection({ title, children }: PropsWithChildren<{ title: string }>) {
-  return (
-    <div className="mb-3">
-      <div className="px-1 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">{title}</div>
-      {children}
-    </div>
-  );
-}
 
 function ExplorerIcon({ children }: PropsWithChildren) {
-  return <span className="grid w-3 shrink-0 place-items-center text-[11px] text-[var(--muted)]">{children}</span>;
+  return <span className="grid w-4 shrink-0 place-items-center text-[var(--muted)]">{children}</span>;
 }
 
-function TabButton({ active, children, onClick }: PropsWithChildren<{ active: boolean; onClick: () => void }>) {
-  return (
-    <button
-      className={classNames(
-        'border-r border-[var(--line)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.12em]',
-        active ? 'bg-[var(--bg-editor)] text-[var(--text)]' : 'text-[var(--muted)]',
-      )}
-      onClick={onClick}
-      type="button"
-    >
-      {children}
-    </button>
-  );
-}
 
 function Field({ label, children }: PropsWithChildren<{ label: string }>) {
   return (
     <label className="block text-sm text-[var(--muted)]">
-      <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.08em]">{label}</div>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.08em]">{label}</div>
       {children}
     </label>
   );
 }
 
 function EmptyInline({ message }: { message: string }) {
-  return <div className="px-1 py-1 text-sm text-[var(--muted)]">{message}</div>;
+  return <div className="px-1 py-1 text-[var(--muted)]">{message}</div>;
 }
 
 function WorkspaceEmpty({ title, body }: { title: string; body: string }) {
@@ -839,36 +761,11 @@ function WorkspaceEmpty({ title, body }: { title: string; body: string }) {
   );
 }
 
-function ResultsToolbar({ result, tab, filterValue, sortState, onFilterChange, onClear, onExport }: { result: QueryResult; tab: EditorTab | undefined; filterValue: string; sortState: SortState; onFilterChange: (value: string) => void; onClear: () => void; onExport: () => void; }) {
-  return (
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border border-[var(--line)] bg-[var(--bg-tab)] px-3 py-1.5 font-mono text-[11px] text-[var(--muted)]">
-      <div className="flex items-center gap-3 overflow-hidden">
-        <span className="truncate">{tab?.title}</span>
-        <span>{result.rowCount} rows</span>
-        <span>{result.executionTimeMs} ms</span>
-        <span>{result.columns.length} cols</span>
-        {sortState ? <span>{`${result.columns[sortState.columnIndex]} ${sortState.direction}`}</span> : null}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <input className="input w-[180px] py-1 text-[11px]" onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter rows" value={filterValue} />
-        <GridIconButton onClick={onClear} title="Clear view"><ClearIcon /></GridIconButton>
-        <GridIconButton onClick={onExport} title="Export CSV"><ExportIcon /></GridIconButton>
-      </div>
-    </div>
-  );
-}
 
-function GridIconButton({ children, onClick, title }: PropsWithChildren<{ onClick: () => void; title: string }>) {
-  return (
-    <button className="grid h-6 w-6 place-items-center border border-transparent text-[12px] text-[var(--muted)] hover:border-[var(--line)] hover:bg-[var(--bg-input)]" onClick={onClick} title={title} type="button">
-      {children}
-    </button>
-  );
-}
 
-function SchemaTree({ tree, onPreview, dense = false }: { tree: SchemaNode[]; onPreview: (schema: string, table: string) => Promise<void>; dense?: boolean; }) {
+function DatabaseTree({ connection, tree, onPreview }: { connection: ActiveConnectionSummary; tree: SchemaNode[]; onPreview: (schema: string, table: string) => Promise<void>; }) {
+  const [dbOpen, setDbOpen] = useState(true);
   const [openSchemas, setOpenSchemas] = useState<Record<string, boolean>>({});
-  const [openTables, setOpenTables] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setOpenSchemas((current) => {
@@ -883,89 +780,88 @@ function SchemaTree({ tree, onPreview, dense = false }: { tree: SchemaNode[]; on
   }, [tree]);
 
   return (
-    <div className={classNames('overflow-auto', dense ? 'border border-[var(--line)]' : '')}>
-      {tree.map((schema) => {
-        const schemaOpen = openSchemas[schema.name] ?? true;
-        return (
-          <div className="last:border-b-0" key={schema.name}>
-            <button className="flex w-full items-center justify-between px-2 py-1 text-left hover:bg-[var(--selection)]" onClick={() => setOpenSchemas((current) => ({ ...current, [schema.name]: !schemaOpen }))} type="button">
-              <span className="mr-2 w-3 shrink-0 font-mono text-[10px] text-[var(--muted)]">{schemaOpen ? '▾' : '▸'}</span>
-              <ExplorerIcon><FolderIcon /></ExplorerIcon>
-              <span className="flex-1 text-sm text-[var(--text)]">{schema.name}</span>
-              <span className="font-mono text-[11px] text-[var(--muted)]">{schema.tables.length}</span>
-            </button>
-            {schemaOpen ? (
-              <div>
-                {schema.tables.map((table) => {
-                  const tableKey = `${schema.name}.${table.name}`;
-                  const tableOpen = openTables[tableKey] ?? false;
-                  return (
-                    <div key={tableKey}>
-                      <div className="flex items-center gap-2 pl-4 pr-2">
-                        <span className="w-3 shrink-0 font-mono text-[10px] text-[var(--muted)]">{tableOpen ? '▾' : '▸'}</span>
+    <div className="overflow-auto">
+      <button className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-[var(--selection)]" onClick={() => setDbOpen((c) => !c)} type="button">
+        <span className="w-4 shrink-0 text-center text-[var(--muted)]">{dbOpen ? '▾' : '▸'}</span>
+        <ExplorerIcon><DatabaseIcon /></ExplorerIcon>
+        <span className="flex-1 truncate text-[var(--text)]">{connection.database}</span>
+      </button>
+      {dbOpen ? (
+        <div>
+          {tree.map((schema) => {
+            const schemaOpen = openSchemas[schema.name] ?? true;
+            return (
+              <div key={schema.name}>
+                <button className="flex w-full items-center gap-2 py-1 pl-8 pr-2 text-left hover:bg-[var(--selection)]" onClick={() => setOpenSchemas((current) => ({ ...current, [schema.name]: !schemaOpen }))} type="button">
+                  <span className="w-4 shrink-0 text-center text-[var(--muted)]">{schemaOpen ? '▾' : '▸'}</span>
+                  <ExplorerIcon><FolderIcon /></ExplorerIcon>
+                  <span className="flex-1 truncate text-[var(--text)]">{schema.name}</span>
+                  <span className="shrink-0 text-[var(--muted)]">{schema.tables.length}</span>
+                </button>
+                {schemaOpen ? (
+                  <div>
+                    {schema.tables.map((table) => (
+                      <div className="flex items-center gap-2 pl-14 pr-2" key={`${schema.name}.${table.name}`}>
                         <ExplorerIcon><TableIcon /></ExplorerIcon>
-                        <button className="flex-1 px-2 py-1 text-left text-sm text-[var(--text)] hover:bg-[var(--selection)]" onClick={() => void onPreview(schema.name, table.name)} type="button">
+                        <button className="flex-1 truncate py-1 text-left text-[var(--text)] hover:bg-[var(--selection)]" onClick={() => void onPreview(schema.name, table.name)} type="button">
                           {table.name}
                         </button>
-                        <button className="font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--muted)]" onClick={() => setOpenTables((current) => ({ ...current, [tableKey]: !tableOpen }))} type="button">
-                          cols
-                        </button>
                       </div>
-                      {tableOpen ? <ColumnList table={table} /> : null}
-                    </div>
-                  );
-                })}
+                    ))}
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ColumnList({ table }: { table: TableNode }) {
-  return (
-    <div className="space-y-1 py-1 pl-11 pr-3">
-      {table.columns.map((column) => (
-        <div className="flex items-start gap-2" key={column.name}>
-          <ExplorerIcon><ColumnIcon /></ExplorerIcon>
-          <div>
-            <div className="font-mono text-[12px] text-[var(--text)]">{column.name}</div>
-            <div className="text-[11px] text-[var(--muted)]">{column.dataType}{column.nullable ? '' : ' · not null'}</div>
-          </div>
+            );
+          })}
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
 
-function ResultsTable({ result, sortState, onSort }: { result: QueryResult; sortState: SortState; onSort: (columnIndex: number) => void }) {
+
+function ResultsTable({
+  result,
+  sortState,
+  onSort,
+  rowOffset = 0,
+}: {
+  result: QueryResult;
+  sortState: SortState;
+  onSort: (columnIndex: number) => void;
+  rowOffset?: number;
+}) {
   return (
-    <div className="border border-[var(--line)] bg-[var(--bg-editor)]">
+    <div className="bg-[var(--bg-editor)]">
       {result.notice ? <div className="border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--accent)]">{result.notice}</div> : null}
-      <div className="overflow-auto">
+      <div>
         <table className="min-w-full border-collapse font-mono text-[12px]">
-          <thead className="sticky top-0 bg-[var(--bg-tab)] text-left text-[var(--muted)]">
+          <thead className="sticky top-0 z-[1] bg-[var(--bg-tab)] text-left text-[var(--text-bright)]">
             <tr>
-              <th className="w-12 border-b border-[var(--line)] px-3 py-2 font-medium text-right">#</th>
+              <th className="w-12 border-b border-r border-[var(--line)] px-3 pt-4 pb-2 font-medium text-right">#</th>
               {result.columns.map((column, index) => (
-                <th className="border-b border-[var(--line)] px-3 py-2 font-medium" key={column}>
-                  <button className="flex items-center gap-2" onClick={() => onSort(index)} type="button">
-                    <span>{column}</span>
-                    <span className="text-[10px] text-[var(--muted)]">{sortState?.columnIndex === index ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}</span>
-                  </button>
+                <th className="relative border-b border-r border-[var(--line)] px-3 pt-4 pb-2 font-medium" key={column}>
+                  <div className="flex items-center gap-1">
+                    <button className="flex-1 text-left" onClick={() => onSort(index)} type="button">
+                      {column}
+                    </button>
+                    <span className="shrink-0 text-[var(--muted)]"><FilterIcon /></span>
+                    <button className="inline-flex shrink-0 flex-col leading-none text-[8px] text-[var(--muted)]" onClick={() => onSort(index)} type="button">
+                      <span className={sortState?.columnIndex === index && sortState.direction === 'asc' ? 'text-[var(--text-bright)]' : ''}>▲</span>
+                      <span className={sortState?.columnIndex === index && sortState.direction === 'desc' ? 'text-[var(--text-bright)]' : ''}>▼</span>
+                    </button>
+                  </div>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {result.rows.map((row, rowIndex) => (
-              <tr className="odd:bg-[rgba(255,255,255,0.015)]" key={`${rowIndex}-${row.join('|')}`}>
-                <td className="border-b border-[var(--line-soft)] px-3 py-2 text-right text-[var(--muted)]">{rowIndex + 1}</td>
+              <tr key={`${rowIndex}-${row.join('|')}`}>
+                <td className="border-b border-r border-[var(--line)] px-3 py-2 text-right text-[var(--muted)]">{rowOffset + rowIndex + 1}</td>
                 {row.map((cell, cellIndex) => (
-                  <td className="max-w-[360px] border-b border-[var(--line-soft)] px-3 py-2 align-top text-[var(--text)]" key={`${rowIndex}-${cellIndex}`}>
-                    <div className="whitespace-pre-wrap break-words">{cell}</div>
+                  <td className="max-w-[400px] border-b border-r border-[var(--line)] px-3 py-2 text-[var(--muted)]" key={`${rowIndex}-${cellIndex}`}>
+                    <div className="overflow-hidden text-ellipsis whitespace-nowrap">{cell}</div>
                   </td>
                 ))}
               </tr>
@@ -987,27 +883,9 @@ function DatabaseIcon() { return <IconBase><ellipse cx="8" cy="4" rx="4.5" ry="2
 function FolderIcon() { return <IconBase><path d="M2.5 5h4l1.2-1.5h5.8v8H2.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></IconBase>; }
 function TableIcon() { return <IconBase><rect x="2.5" y="3" width="11" height="10" stroke="currentColor" strokeWidth="1.2" /><path d="M2.5 6.5h11M2.5 10h11M6 3v10M9.8 3v10" stroke="currentColor" strokeWidth="1" /></IconBase>; }
 function QueryIcon() { return <IconBase><path d="M4 4.5h8M4 8h8M4 11.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></IconBase>; }
-function ColumnIcon() { return <IconBase><path d="M4 3.5h8v9H4z" stroke="currentColor" strokeWidth="1.2" /><path d="M6.7 3.5v9M9.3 3.5v9" stroke="currentColor" strokeWidth="1" /></IconBase>; }
-function ClearIcon() { return <IconBase><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></IconBase>; }
 function ExportIcon() { return <IconBase><path d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 12.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></IconBase>; }
+function FilterIcon() { return <IconBase><path d="M2.5 3.5h11L9 8.5v4l-2 1.5v-5.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></IconBase>; }
 
-function filterTree(tree: SchemaNode[], filter: string): SchemaNode[] {
-  const needle = filter.trim().toLowerCase();
-  if (!needle) return tree;
-  return tree.map((schema) => {
-    const schemaMatches = schema.name.toLowerCase().includes(needle);
-    const tables = schema.tables.map((table) => {
-      const tableMatches = table.name.toLowerCase().includes(needle);
-      const columns = table.columns.filter((column) => column.name.toLowerCase().includes(needle) || column.dataType.toLowerCase().includes(needle));
-      if (schemaMatches || tableMatches || columns.length > 0) {
-        return { ...table, columns: tableMatches || schemaMatches ? table.columns : columns };
-      }
-      return null;
-    }).filter((table): table is TableNode => table !== null);
-    if (schemaMatches || tables.length > 0) return { ...schema, tables: schemaMatches ? schema.tables : tables };
-    return null;
-  }).filter((schema): schema is SchemaNode => schema !== null);
-}
 
 function summarizeSql(sql: string) {
   const line = sql.trim().replace(/\s+/g, ' ').slice(0, 56);
