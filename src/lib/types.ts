@@ -14,6 +14,16 @@ export interface SavedConnection extends ConnectionInput {
   id: string;
 }
 
+/** Connection info returned from the backend — password stripped. */
+export interface SafeSavedConnection {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  database: string;
+}
+
 export interface ActiveConnectionSummary {
   id: string;
   label: string;
@@ -42,7 +52,7 @@ export interface SchemaNode {
 }
 
 export interface AppSnapshot {
-  savedConnections: SavedConnection[];
+  savedConnections: SafeSavedConnection[];
   activeConnection: Nullable<ActiveConnectionSummary>;
   databaseTree: SchemaNode[];
 }

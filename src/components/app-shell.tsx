@@ -8,7 +8,7 @@ import type {
   AppSnapshot,
   ConnectionInput,
   QueryResult,
-  SavedConnection,
+  SafeSavedConnection,
   SchemaNode,
   TableNode,
 } from '@/lib/types';
@@ -52,6 +52,8 @@ type EditorTab = {
   title: string;
   sql: string;
   source?: { schema: string; table: string };
+  sortState: SortState;
+  currentPage: number;
   result: QueryResult | null;
 };
 
@@ -88,11 +90,11 @@ export function AppShell() {
       title: 'sql-query.sql',
       sql: QUERY_PRESETS[0].sql,
       result: null,
+      sortState: null,
+      currentPage: 0,
     },
   ]);
   const [activeEditorTabId, setActiveEditorTabId] = useState('tab-default-query');
-  const [sortState, setSortState] = useState<SortState>(null);
-  const [currentPage, setCurrentPage] = useState(0);
   const PAGE_SIZE = 500;
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [dragState, setDragState] = useState<DragState>(null);
@@ -110,23 +112,25 @@ export function AppShell() {
       return null;
     }
 
+    const tabSort = activeEditorTab.sortState;
+    const tabPage = activeEditorTab.currentPage;
     let rows = result.rows;
 
-    if (sortState) {
+    if (tabSort) {
       rows = [...rows].sort((left, right) => {
-        const leftValue = left[sortState.columnIndex] ?? '';
-        const rightValue = right[sortState.columnIndex] ?? '';
+        const leftValue = left[tabSort.columnIndex] ?? '';
+        const rightValue = right[tabSort.columnIndex] ?? '';
         const ordered = leftValue.localeCompare(rightValue, undefined, {
           numeric: true,
           sensitivity: 'base',
         });
-        return sortState.direction === 'asc' ? ordered : -ordered;
+        return tabSort.direction === 'asc' ? ordered : -ordered;
       });
     }
 
     const totalRows = rows.length;
     const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
-    const safePage = Math.min(currentPage, totalPages - 1);
+    const safePage = Math.min(tabPage, totalPages - 1);
     const pagedRows = rows.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
     return {
@@ -136,11 +140,11 @@ export function AppShell() {
       totalPages,
       currentPage: safePage,
       pageStart: safePage * PAGE_SIZE,
-      notice: sortState
+      notice: tabSort
         ? `View rows ${totalRows} of ${result.rows.length}`
         : result.notice,
     };
-  }, [activeEditorTab?.result, sortState, currentPage]);
+  }, [activeEditorTab]);
 
   useEffect(() => {
     void refresh();
@@ -209,6 +213,8 @@ export function AppShell() {
         title: 'sql-query.sql',
         sql,
         result: null,
+        sortState: null,
+        currentPage: 0,
       },
     ]);
     setActiveEditorTabId(id);
@@ -222,7 +228,7 @@ export function AppShell() {
       setEditorTabs((current) =>
         current.map((tab) =>
           tab.id === existing.id
-            ? { ...tab, sql, result, title: `${schema}.${table}`, source: { schema, table } }
+            ? { ...tab, sql, result, title: `${schema}.${table}`, source: { schema, table }, sortState: null, currentPage: 0 }
             : tab,
         ),
       );
@@ -240,6 +246,8 @@ export function AppShell() {
         sql,
         source: { schema, table },
         result,
+        sortState: null,
+        currentPage: 0,
       },
     ]);
     setActiveEditorTabId(id);
@@ -255,6 +263,8 @@ export function AppShell() {
             title: 'sql-query.sql',
             sql: QUERY_PRESETS[0].sql,
             result: null,
+            sortState: null,
+            currentPage: 0,
           },
         ];
       }
@@ -268,20 +278,18 @@ export function AppShell() {
   }
 
   function clearResultView() {
-    setSortState(null);
-    setCurrentPage(0);
+    updateActiveTab({ sortState: null, currentPage: 0 });
   }
 
   function toggleSort(columnIndex: number) {
-    setSortState((current) => {
-      if (!current || current.columnIndex !== columnIndex) {
-        return { columnIndex, direction: 'asc' };
-      }
-      if (current.direction === 'asc') {
-        return { columnIndex, direction: 'desc' };
-      }
-      return null;
-    });
+    const current = activeEditorTab?.sortState ?? null;
+    if (!current || current.columnIndex !== columnIndex) {
+      updateActiveTab({ sortState: { columnIndex, direction: 'asc' } });
+    } else if (current.direction === 'asc') {
+      updateActiveTab({ sortState: { columnIndex, direction: 'desc' } });
+    } else {
+      updateActiveTab({ sortState: null });
+    }
   }
 
   function exportCurrentResult() {
@@ -315,14 +323,14 @@ export function AppShell() {
     setOpenMenu(null);
   }
 
-  function openEditConnectionModal(connection: SavedConnection) {
+  function openEditConnectionModal(connection: SafeSavedConnection) {
     setDraft({
       id: connection.id,
       name: connection.name,
       host: connection.host,
       port: connection.port,
       user: connection.user,
-      password: connection.password,
+      password: '',
       database: connection.database,
     });
     setPersistConnection(true);
@@ -343,7 +351,7 @@ export function AppShell() {
     }
   }
 
-  async function handleActivate(connection: SavedConnection) {
+  async function handleActivate(connection: SafeSavedConnection) {
     try {
       setLoading(`Connecting to ${connection.host}...`);
       setError(null);
@@ -356,7 +364,7 @@ export function AppShell() {
     }
   }
 
-  async function handleDeleteConnection(connection: SavedConnection) {
+  async function handleDeleteConnection(connection: SafeSavedConnection) {
     try {
       setLoading(`Removing ${connection.name || connection.host}...`);
       setError(null);
@@ -568,17 +576,17 @@ export function AppShell() {
                   <div className="min-h-0 flex-1 overflow-scroll bg-[var(--bg-editor)]">
                     <ResultsTable
                       result={processedResult}
-                      sortState={sortState}
+                      sortState={activeEditorTab?.sortState ?? null}
                       onSort={toggleSort}
                       rowOffset={processedResult.pageStart}
                     />
                   </div>
                   <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[var(--line)] bg-[var(--bg-tab)] px-3 py-1.5 text-[14px] text-[var(--muted)]">
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => setCurrentPage(0)} type="button">{'<<'}</button>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => setCurrentPage((p) => p - 1)} type="button">{'<'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: 0 })} type="button">{'<<'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage - 1 })} type="button">{'<'}</button>
                     <span className="font-bold">{processedResult.rowCount > 0 ? `${(processedResult.pageStart + 1).toLocaleString()}–${Math.min(processedResult.pageStart + PAGE_SIZE, processedResult.rowCount).toLocaleString()}` : '0'} of {processedResult.rowCount.toLocaleString()}</span>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => setCurrentPage((p) => p + 1)} type="button">{'>'}</button>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => setCurrentPage(processedResult.totalPages - 1)} type="button">{'>>'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage + 1 })} type="button">{'>'}</button>
+                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.totalPages - 1 })} type="button">{'>>'}</button>
                   </div>
                 </>
               ) : (

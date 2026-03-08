@@ -1,11 +1,14 @@
 use tauri::{AppHandle, State};
 
-use crate::models::{AppSnapshot, ConnectionInput, QueryResult, SavedConnection};
+use crate::models::{AppSnapshot, ConnectionInput, QueryResult, SafeSavedConnection, SavedConnection};
 use crate::state::AppState;
 use crate::{postgres, storage};
 
 fn snapshot(app: &AppHandle, state: &State<'_, AppState>) -> Result<AppSnapshot, String> {
-    let saved_connections = storage::load_connections(app)?;
+    let saved_connections: Vec<SafeSavedConnection> = storage::load_connections(app)?
+        .iter()
+        .map(SafeSavedConnection::from)
+        .collect();
     let active_connection = state
         .active_connection
         .lock()

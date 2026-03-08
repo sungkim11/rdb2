@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use postgres::{Client, NoTls, SimpleQueryMessage};
@@ -26,7 +27,10 @@ pub fn fetch_tree(connection: &SavedConnection) -> Result<Vec<SchemaNode>, Strin
         )
         .map_err(|error| format!("failed to load database tree: {error}"))?;
 
-    let mut schemas: Vec<SchemaNode> = Vec::new();
+    // Use HashMaps for O(1) lookups instead of linear scans.
+    let mut schema_order: Vec<String> = Vec::new();
+    let mut schema_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut table_map: HashMap<(String, String), TableNode> = HashMap::new();
 
     for row in rows {
         let schema_name: String = row.get(0);
@@ -37,37 +41,45 @@ pub fn fetch_tree(connection: &SavedConnection) -> Result<Vec<SchemaNode>, Strin
         let is_nullable: String = row.get(5);
         let default_value: Option<String> = row.get(6);
 
-        let schema_index = match schemas.iter().position(|schema| schema.name == schema_name) {
-            Some(index) => index,
-            None => {
-                schemas.push(SchemaNode {
-                    name: schema_name.clone(),
-                    tables: Vec::new(),
-                });
-                schemas.len() - 1
-            }
-        };
+        let table_names = schema_map.entry(schema_name.clone()).or_insert_with(|| {
+            schema_order.push(schema_name.clone());
+            Vec::new()
+        });
 
-        let tables = &mut schemas[schema_index].tables;
-        let table_index = match tables.iter().position(|table| table.name == table_name) {
-            Some(index) => index,
-            None => {
-                tables.push(TableNode {
-                    name: table_name.clone(),
-                    table_type,
-                    columns: Vec::new(),
-                });
-                tables.len() - 1
+        let key = (schema_name, table_name.clone());
+        let table_node = table_map.entry(key).or_insert_with(|| {
+            table_names.push(table_name.clone());
+            TableNode {
+                name: table_name,
+                table_type,
+                columns: Vec::new(),
             }
-        };
+        });
 
-        tables[table_index].columns.push(ColumnNode {
+        table_node.columns.push(ColumnNode {
             name: column_name,
             data_type,
             nullable: is_nullable == "YES",
             default_value,
         });
     }
+
+    let schemas = schema_order
+        .into_iter()
+        .map(|schema_name| {
+            let table_names = schema_map.remove(&schema_name).unwrap_or_default();
+            let tables = table_names
+                .into_iter()
+                .filter_map(|table_name| {
+                    table_map.remove(&(schema_name.clone(), table_name))
+                })
+                .collect();
+            SchemaNode {
+                name: schema_name,
+                tables,
+            }
+        })
+        .collect();
 
     Ok(schemas)
 }
@@ -96,9 +108,33 @@ pub fn run_query(
 ) -> Result<QueryResult, String> {
     let mut client = connect(connection)?;
     let started = Instant::now();
+
+    // Request limit+1 rows so we can detect truncation without fetching everything.
+    let fetch_limit = limit + 1;
+    let limited_sql = format!(
+        "SELECT * FROM ({}) AS _rdb2_sub LIMIT {}",
+        sql.trim().trim_end_matches(';'),
+        fetch_limit
+    );
+
     let messages = client
-        .simple_query(sql)
-        .map_err(|error| format!("query failed: {error}"))?;
+        .simple_query(&limited_sql)
+        .map_err(|error| {
+            // If wrapping fails (e.g. non-SELECT statement), fall back to raw execution.
+            // We return the error here; the fallback is handled below.
+            format!("{error}")
+        });
+
+    // If the wrapped query fails, try the original SQL directly (for DDL/DML statements).
+    let messages = match messages {
+        Ok(msgs) => msgs,
+        Err(_) => {
+            let mut client = connect(connection)?;
+            client
+                .simple_query(sql)
+                .map_err(|error| format!("query failed: {error}"))?
+        }
+    };
 
     let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<String>> = Vec::new();

@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// Escape a value for use in a libpq key=value connection string.
+/// Single quotes are used to wrap values containing spaces or special characters,
+/// and backslashes/single quotes within are escaped.
+fn escape_libpq_value(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    {
+        return value.to_string();
+    }
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInput {
@@ -36,7 +53,11 @@ impl SavedConnection {
     pub fn connection_string(&self) -> String {
         format!(
             "host={} port={} user={} password={} dbname={} connect_timeout=5",
-            self.host, self.port, self.user, self.password, self.database
+            escape_libpq_value(&self.host),
+            self.port,
+            escape_libpq_value(&self.user),
+            escape_libpq_value(&self.password),
+            escape_libpq_value(&self.database),
         )
     }
 }
@@ -103,10 +124,35 @@ pub struct SchemaNode {
     pub tables: Vec<TableNode>,
 }
 
+/// Connection info sent to the renderer — password stripped.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeSavedConnection {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+}
+
+impl From<&SavedConnection> for SafeSavedConnection {
+    fn from(value: &SavedConnection) -> Self {
+        Self {
+            id: value.id.clone(),
+            name: value.name.clone(),
+            host: value.host.clone(),
+            port: value.port,
+            user: value.user.clone(),
+            database: value.database.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
-    pub saved_connections: Vec<SavedConnection>,
+    pub saved_connections: Vec<SafeSavedConnection>,
     pub active_connection: Option<ActiveConnectionSummary>,
     pub database_tree: Vec<SchemaNode>,
 }
