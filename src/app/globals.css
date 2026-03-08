@@ -34,7 +34,7 @@ body {
 }
 
 body {
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), sans-serif;
 }
 
 button,
@@ -60,7 +60,8 @@ textarea {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3e3e42;
+  background: #d1d5db;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -68,23 +69,24 @@ textarea {
 }
 
 .sidebar-scroll::-webkit-scrollbar-track {
-  background: #222222;
+  background: transparent;
 }
 
 .sidebar-scroll::-webkit-scrollbar-thumb {
-  background: #3e3e42;
+  background: #d1d5db;
   border-radius: 4px;
 }
 
 .input {
   width: 100%;
-  border: 1px solid var(--line);
-  background: var(--bg-input);
-  color: var(--text);
+  border: 1px solid #d1d5db;
+  background: white;
+  color: black;
   padding: 0.45rem 0.65rem;
   outline: none;
+  border-radius: 0.25rem;
 }
 
 .input:focus {
-  border-color: var(--accent);
+  border-color: #3794ff;
 }

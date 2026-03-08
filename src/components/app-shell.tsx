@@ -3,6 +3,7 @@
 import type { PropsWithChildren, ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { isTauriRuntime, tauriApi } from '@/lib/tauri';
+import { SqlEditor } from '@/components/sql-editor';
 import type {
   ActiveConnectionSummary,
   AppSnapshot,
@@ -62,7 +63,7 @@ type SortState = {
   direction: 'asc' | 'desc';
 } | null;
 
-type DragState = 'sidebar' | null;
+type DragState = 'sidebar' | 'connections' | null;
 
 function classNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(' ');
@@ -79,24 +80,16 @@ export function AppShell() {
   const [error, setError] = useState<string | null>(null);
   const [showConnectionModal, setShowConnectionModal] = useState(false);
   const [showSqlEditor, setShowSqlEditor] = useState(false);
+  const [sqlEditorText, setSqlEditorText] = useState('');
   const [openMenu, setOpenMenu] = useState<TopMenu>(null);
   const [draft, setDraft] = useState<ConnectionInput>(EMPTY_CONNECTION);
   const [persistConnection, setPersistConnection] = useState(true);
   const [desktopReady, setDesktopReady] = useState(false);
-  const [editorTabs, setEditorTabs] = useState<EditorTab[]>([
-    {
-      id: 'tab-default-query',
-      kind: 'query',
-      title: 'sql-query.sql',
-      sql: QUERY_PRESETS[0].sql,
-      result: null,
-      sortState: null,
-      currentPage: 0,
-    },
-  ]);
-  const [activeEditorTabId, setActiveEditorTabId] = useState('tab-default-query');
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>([]);
+  const [activeEditorTabId, setActiveEditorTabId] = useState('');
   const PAGE_SIZE = 500;
   const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [connectionsHeight, setConnectionsHeight] = useState(180);
   const [dragState, setDragState] = useState<DragState>(null);
 
   const activeEditorTab = useMemo(
@@ -154,6 +147,10 @@ export function AppShell() {
     function onPointerMove(event: PointerEvent) {
       if (dragState === 'sidebar') {
         setSidebarWidth(Math.min(520, Math.max(240, event.clientX)));
+      } else if (dragState === 'connections') {
+        const headerHeight = 36; // h-9 header
+        const y = event.clientY - headerHeight;
+        setConnectionsHeight(Math.min(400, Math.max(80, y)));
       }
     }
 
@@ -202,6 +199,12 @@ export function AppShell() {
     );
   }
 
+
+  async function handleExit() {
+    if (!isTauriRuntime()) return;
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().close();
+  }
 
   function openNewQueryTab(sql = QUERY_PRESETS[0].sql) {
     const id = makeTabId('query');
@@ -255,23 +258,9 @@ export function AppShell() {
 
   function closeEditorTab(id: string) {
     setEditorTabs((current) => {
-      if (current.length === 1) {
-        return [
-          {
-            id: 'tab-default-query',
-            kind: 'query',
-            title: 'sql-query.sql',
-            sql: QUERY_PRESETS[0].sql,
-            result: null,
-            sortState: null,
-            currentPage: 0,
-          },
-        ];
-      }
-
       const next = current.filter((tab) => tab.id !== id);
       if (activeEditorTabId === id) {
-        setActiveEditorTabId(next[next.length - 1].id);
+        setActiveEditorTabId(next.length > 0 ? next[next.length - 1].id : '');
       }
       return next;
     });
@@ -389,24 +378,41 @@ export function AppShell() {
     }
   }
 
-  async function handleRunQuery() {
-    if (!activeEditorTab) {
-      return;
-    }
+  async function handleRunQuery(sqlOverride?: string) {
+    const sql = (sqlOverride ?? sqlEditorText).trim();
+    if (!sql) return;
 
     try {
       setLoading('Running SQL...');
       setError(null);
-      const nextResult = await tauriApi.runQuery(activeEditorTab.sql, 500);
-      updateActiveTab({ result: nextResult, title: summarizeSql(activeEditorTab.sql) });
-      clearResultView();
-      setShowSqlEditor(false);
+      const nextResult = await tauriApi.runQuery(sql, 500);
+      const title = summarizeSql(sql);
+
+      const existingQueryTab = editorTabs.find((tab) => tab.kind === 'query');
+      if (existingQueryTab) {
+        setEditorTabs((current) =>
+          current.map((tab) =>
+            tab.id === existingQueryTab.id
+              ? { ...tab, sql, result: nextResult, title, sortState: null, currentPage: 0 }
+              : tab,
+          ),
+        );
+        setActiveEditorTabId(existingQueryTab.id);
+      } else {
+        const id = makeTabId('query');
+        setEditorTabs((current) => [
+          ...current,
+          { id, kind: 'query', title, sql, result: nextResult, sortState: null, currentPage: 0 },
+        ]);
+        setActiveEditorTabId(id);
+      }
+
       setOpenMenu(null);
       setQueryHistory((current) => [
         {
           id: crypto.randomUUID(),
-          title: summarizeSql(activeEditorTab.sql),
-          sql: activeEditorTab.sql,
+          title,
+          sql,
           resultMeta: `${nextResult.rowCount} rows in ${nextResult.executionTimeMs} ms`,
         },
         ...current,
@@ -443,30 +449,41 @@ export function AppShell() {
   }
 
   return (
-    <main className="h-screen bg-[var(--bg)] text-[13px] text-[var(--text)]" onClick={() => { if (openMenu) setOpenMenu(null); }}>
+    <main className="h-screen bg-white text-[13px] text-black" onClick={() => { if (openMenu) setOpenMenu(null); }}>
       <div className="flex h-screen flex-col overflow-hidden">
-        <header className="relative flex h-9 items-center justify-between border-b border-[var(--line)] bg-[var(--bg-elevated)] px-3">
-          <div className="flex min-w-0 items-center gap-4" onClick={(event) => event.stopPropagation()}>
-            <div className="bg-[var(--accent)] px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.14em] text-white">
-              rdb2
+        <header className="relative shrink-0 border-b border-gray-300 bg-[#0f1a2e]">
+          <div className="flex h-9 items-center justify-between px-3">
+            <div className="flex min-w-0 items-center gap-4" onClick={(event) => event.stopPropagation()}>
+              <div className="bg-[var(--accent)] px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.14em] text-white">
+                rdb2
+              </div>
+              <div className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
+                <MenuButton active={openMenu === 'file'} label="File" onClick={() => setOpenMenu((current) => (current === 'file' ? null : 'file'))} />
+                <MenuButton active={openMenu === 'sql'} label="SQL" onClick={() => setOpenMenu((current) => (current === 'sql' ? null : 'sql'))} />
+                <MenuButton active={openMenu === 'view'} label="View" onClick={() => setOpenMenu((current) => (current === 'view' ? null : 'view'))} />
+              </div>
             </div>
-            <div className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
-              <MenuButton active={openMenu === 'file'} label="File" onClick={() => setOpenMenu((current) => (current === 'file' ? null : 'file'))} />
-              <MenuButton active={openMenu === 'sql'} label="SQL" onClick={() => setOpenMenu((current) => (current === 'sql' ? null : 'sql'))} />
-              <MenuButton active={openMenu === 'view'} label="View" onClick={() => setOpenMenu((current) => (current === 'view' ? null : 'view'))} />
+
+            <div className="truncate text-[11px] uppercase tracking-[0.12em] text-[var(--muted)]">
+              {snapshot?.activeConnection ? snapshot.activeConnection.database : 'No active database'}
             </div>
           </div>
 
-          <div className="truncate text-[11px] uppercase tracking-[0.12em] text-[var(--muted)]">
-            {snapshot?.activeConnection ? snapshot.activeConnection.database : 'No active database'}
+          <div className="flex items-center gap-1 bg-[#1e3a5f] px-3 py-1 text-[var(--muted)]">
+            <ToolbarIconButton onClick={openNewConnectionModal} title="New connection"><PlusIcon /></ToolbarIconButton>
+            <ToolbarIconButton onClick={() => openNewQueryTab()} title="New query"><QueryIcon /></ToolbarIconButton>
+            <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+            <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
+            <ToolbarIconButton onClick={() => { exportCurrentResult(); }} title="Export CSV"><ExportIcon /></ToolbarIconButton>
           </div>
 
           {openMenu ? (
-            <div className="absolute left-16 top-9 z-10 min-w-[220px] border border-[var(--line)] bg-[#252526] shadow-[0_8px_24px_rgba(0,0,0,0.45)]" onClick={(event) => event.stopPropagation()}>
+            <div className="absolute left-16 top-9 z-10 min-w-[220px] border border-gray-300 bg-[#252526] shadow-[0_8px_24px_rgba(0,0,0,0.45)]" onClick={(event) => event.stopPropagation()}>
               {openMenu === 'file' ? (
                 <MenuPanel>
                   <MenuItem label="New Connection" shortcut="Ctrl+N" onClick={openNewConnectionModal} />
                   <MenuItem label="New Query" shortcut="Ctrl+T" onClick={() => openNewQueryTab()} />
+                  <MenuItem label="Exit" onClick={() => void handleExit()} />
                 </MenuPanel>
               ) : null}
               {openMenu === 'sql' ? (
@@ -486,11 +503,11 @@ export function AppShell() {
           ) : null}
         </header>
 
-        <div className="flex flex-1 overflow-hidden">
-          <aside className="flex min-h-0 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--bg-sidebar)] text-[12px]" style={{ width: sidebarWidth }}>
-            <div className="flex h-1/4 flex-col border-b border-[var(--line)]">
-              <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
-                <div className="font-medium text-[var(--text)]">Connections</div>
+        <div className="flex flex-1 gap-1 overflow-hidden p-1">
+          <aside className="flex min-h-0 shrink-0 flex-col gap-1 text-[12px]" style={{ width: sidebarWidth }}>
+            <div className="flex shrink-0 flex-col overflow-hidden rounded border border-gray-300 bg-white" style={{ height: connectionsHeight }}>
+              <div className="flex items-center justify-between rounded-t border-b border-gray-300 bg-white px-3 py-2">
+                <div className="text-[13px] font-medium text-black">Connections</div>
                 <ToolbarIconButton onClick={openNewConnectionModal} title="New connection"><PlusIcon /></ToolbarIconButton>
               </div>
               <div className="sidebar-scroll flex-1 overflow-y-scroll px-2 py-2">
@@ -499,13 +516,11 @@ export function AppShell() {
                     {snapshot.savedConnections.map((connection) => {
                       const active = snapshot.activeConnection?.id === connection.id;
                       return (
-                        <div className={classNames('group flex items-center gap-2 px-1 py-1', active && 'bg-[var(--selection)]')} key={connection.id}>
+                        <div className="group flex items-center gap-2 px-1 py-1" key={connection.id} onContextMenu={(event) => { event.preventDefault(); openEditConnectionModal(connection); }}>
                           <ExplorerIcon><ConnectionIcon active={active} /></ExplorerIcon>
-                          <button className="min-w-0 flex-1 truncate text-left text-[var(--text)]" onClick={() => void handleActivate(connection)} type="button">
-                            {connection.name || `${connection.user}@${connection.host}`}
+                          <button className="min-w-0 flex-1 truncate text-left text-black" onClick={() => void handleActivate(connection)} type="button">
+                            {`${connection.database}@${connection.host}`}
                           </button>
-                          <button className="hidden text-[var(--muted)] group-hover:block" onClick={() => openEditConnectionModal(connection)} type="button">e</button>
-                          <button className="hidden text-[var(--danger)] group-hover:block" onClick={() => void handleDeleteConnection(connection)} type="button">x</button>
                         </div>
                       );
                     })}
@@ -516,10 +531,15 @@ export function AppShell() {
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="flex items-center gap-1 border-b border-[var(--line)] px-2 py-1.5 text-[var(--muted)]">
-                <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
-                <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+            <div className="h-px shrink-0 cursor-row-resize bg-gray-300 hover:bg-[var(--accent)]" onPointerDown={(event) => { event.stopPropagation(); setDragState('connections'); }} />
+
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-300 bg-white">
+              <div className="flex items-center justify-between rounded-t border-b border-gray-300 bg-white px-3 py-2">
+                <div className="text-[13px] font-medium text-black">Explorer</div>
+                <div className="flex items-center gap-1 text-gray-500">
+                  <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
+                  <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+                </div>
               </div>
               <div className="sidebar-scroll min-h-0 flex-1 overflow-y-scroll px-2 py-2">
                 {snapshot?.activeConnection ? (
@@ -535,134 +555,132 @@ export function AppShell() {
             </div>
           </aside>
 
-          <div className="w-1 shrink-0 cursor-col-resize bg-[var(--line-soft)] hover:bg-[var(--accent)]" onPointerDown={(event) => { event.stopPropagation(); setDragState('sidebar'); }} />
+          <div className="w-px shrink-0 cursor-col-resize bg-gray-300 hover:bg-[var(--accent)]" onPointerDown={(event) => { event.stopPropagation(); setDragState('sidebar'); }} />
 
-          <section className="flex min-w-0 flex-1 flex-col bg-[var(--bg-editor)]">
-            <div className="flex items-center border-b border-[var(--line)] bg-[var(--bg-elevated)] px-1 pt-1">
-              <div className="flex min-w-0 flex-1 overflow-auto">
-                {editorTabs.map((tab) => (
-                  <button
-                    className={classNames(
-                      'group flex min-w-[160px] max-w-[360px] items-center gap-2 border-r border-[var(--line)] px-3 py-1.5 text-left',
-                      tab.id === activeEditorTab?.id ? 'bg-[var(--bg-editor)] text-[var(--text-bright)]' : 'bg-[var(--bg-tab)] text-[var(--muted)]',
-                    )}
-                    key={tab.id}
-                    onClick={() => setActiveEditorTabId(tab.id)}
-                    type="button"
-                  >
-                    <span className="text-[11px] text-[var(--muted)]">
-                      {tab.kind === 'table' ? <TableIcon /> : <QueryIcon />}
-                    </span>
-                    <span className="truncate font-mono text-[12px]">
-                      {tab.title}
-                    </span>
-                    <span
-                      className="ml-auto shrink-0 text-[var(--muted)] hover:text-[var(--text)]"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeEditorTab(tab.id);
-                      }}
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            {showSqlEditor ? (
+              <div className="flex h-1/3 shrink-0 flex-col overflow-hidden rounded border border-gray-300 bg-white">
+                <div className="flex items-center justify-between rounded-t border-b border-gray-300 bg-white px-3 py-2">
+                  <div className="text-[13px] font-medium text-black">SQL Editor</div>
+                  <div className="flex items-center gap-2">
+                    <button className="rounded bg-[var(--accent)] px-3 py-1 text-[12px] text-white hover:opacity-90" onClick={() => void handleRunQuery(sqlEditorText)} type="button">Run</button>
+                    <button className="text-[12px] text-gray-500 hover:text-black" onClick={() => setShowSqlEditor(false)} type="button">Close</button>
+                  </div>
+                </div>
+                <SqlEditor
+                  value={sqlEditorText}
+                  onChange={setSqlEditorText}
+                  onRun={(text) => void handleRunQuery(text)}
+                />
+              </div>
+            ) : null}
+
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-gray-300 bg-white">
+              <div className="flex items-center justify-between rounded-t border-b border-gray-300 bg-white px-3 py-2">
+                <div className="text-[13px] font-medium text-black">
+                  {activeEditorTab?.kind === 'table' && activeEditorTab.source ? `Data - ${activeEditorTab.source.schema}.${activeEditorTab.source.table}` : 'Data'}
+                </div>
+              </div>
+              <div className="flex items-center border-b border-gray-300 bg-white px-1 pt-1">
+                <div className="flex min-w-0 flex-1 overflow-auto">
+                  {editorTabs.map((tab) => (
+                    <button
+                      className={classNames(
+                        'group flex min-w-[160px] max-w-[360px] items-center gap-2 border-r border-gray-300 px-3 py-1.5 text-left',
+                        tab.id === activeEditorTab?.id ? 'bg-[#f0f0f0] text-black' : 'bg-white text-gray-500',
+                      )}
+                      key={tab.id}
+                      onClick={() => setActiveEditorTabId(tab.id)}
+                      type="button"
                     >
-                      ×
-                    </span>
-                  </button>
-                ))}
+                      <span className="text-[11px] text-gray-500">
+                        {tab.kind === 'table' ? <TableIcon /> : <QueryIcon />}
+                      </span>
+                      <span className="truncate font-sans text-[12px]">
+                        {tab.title}
+                      </span>
+                      <span
+                        className="ml-auto shrink-0 text-gray-500 hover:text-black"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeEditorTab(tab.id);
+                        }}
+                      >
+                        ×
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col">
+                {processedResult ? (
+                  <>
+                    <div className="min-h-0 flex-1 overflow-scroll bg-white">
+                      <ResultsTable
+                        result={processedResult}
+                        sortState={activeEditorTab?.sortState ?? null}
+                        onSort={toggleSort}
+                        rowOffset={processedResult.pageStart}
+                      />
+                    </div>
+                    <div className="flex shrink-0 items-center justify-center gap-2 border-t border-gray-300 bg-[#f0f0f0] px-3 py-1.5 text-[14px] text-gray-600">
+                      <button className="px-1 py-0.5 text-[16px] font-extrabold hover:text-black disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: 0 })} type="button">{'«'}</button>
+                      <button className="px-1 py-0.5 text-[16px] font-extrabold hover:text-black disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage - 1 })} type="button">{'‹'}</button>
+                      <span>{processedResult.rowCount > 0 ? `${(processedResult.pageStart + 1).toLocaleString()}–${Math.min(processedResult.pageStart + PAGE_SIZE, processedResult.rowCount).toLocaleString()}` : '0'} of {processedResult.rowCount.toLocaleString()}</span>
+                      <button className="px-1 py-0.5 text-[16px] font-extrabold hover:text-black disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage + 1 })} type="button">{'›'}</button>
+                      <button className="px-1 py-0.5 text-[16px] font-extrabold hover:text-black disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.totalPages - 1 })} type="button">{'»'}</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-auto bg-white p-2">
+                    <WorkspaceEmpty title="No results" body="Run a query or click a table from the explorer." />
+                  </div>
+                )}
               </div>
             </div>
-
-            <div className="flex min-h-0 flex-1 flex-col">
-              {processedResult ? (
-                <>
-                  <div className="min-h-0 flex-1 overflow-scroll bg-[var(--bg-editor)]">
-                    <ResultsTable
-                      result={processedResult}
-                      sortState={activeEditorTab?.sortState ?? null}
-                      onSort={toggleSort}
-                      rowOffset={processedResult.pageStart}
-                    />
-                  </div>
-                  <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[var(--line)] bg-[var(--bg-tab)] px-3 py-1.5 text-[14px] text-[var(--muted)]">
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: 0 })} type="button">{'<<'}</button>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage === 0} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage - 1 })} type="button">{'<'}</button>
-                    <span className="font-bold">{processedResult.rowCount > 0 ? `${(processedResult.pageStart + 1).toLocaleString()}–${Math.min(processedResult.pageStart + PAGE_SIZE, processedResult.rowCount).toLocaleString()}` : '0'} of {processedResult.rowCount.toLocaleString()}</span>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.currentPage + 1 })} type="button">{'>'}</button>
-                    <button className="px-1 py-0.5 font-bold hover:text-[var(--text)] disabled:opacity-30" disabled={processedResult.currentPage >= processedResult.totalPages - 1} onClick={() => updateActiveTab({ currentPage: processedResult.totalPages - 1 })} type="button">{'>>'}</button>
-                  </div>
-                </>
-              ) : (
-                <div className="min-h-0 flex-1 overflow-auto bg-[var(--bg-editor)] p-2">
-                  <WorkspaceEmpty title="No results" body="Run a query or click a table from the explorer." />
-                </div>
-              )}
-            </div>
-          </section>
+          </div>
         </div>
 
-        <footer className="flex h-6 items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--bg-elevated)] px-3 text-[11px] text-[var(--muted)]">
+        <footer className="flex h-6 items-center justify-between gap-3 border-t border-gray-300 bg-[var(--bg-elevated)] px-3 text-[11px] text-[var(--muted)]">
           <div className="truncate">{loading || error || (snapshot?.activeConnection ? `Connected as ${snapshot.activeConnection.user}` : 'Waiting for a database connection.')}</div>
           <div>{error ? 'error' : snapshot?.activeConnection ? 'online' : desktopReady ? 'offline' : 'preview'}</div>
         </footer>
       </div>
 
-      {showSqlEditor && activeEditorTab ? (
-        <div className="fixed inset-0 z-20 grid place-items-center bg-[rgba(0,0,0,0.46)] p-4">
-          <div className="w-full max-w-5xl border border-[var(--line)] bg-[var(--bg-elevated)]">
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-2.5">
-              <div className="flex items-center gap-2 text-[12px] text-[var(--text)]">
-                <span className="text-[var(--muted)]">{activeEditorTab.kind === 'table' ? <TableIcon /> : <QueryIcon />}</span>
-                <span>{activeEditorTab.title}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                {QUERY_PRESETS.map((preset) => (
-                  <button
-                    className="border border-[var(--line)] bg-[var(--bg-input)] px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
-                    key={preset.label}
-                    onClick={() => updateActiveTab({ sql: preset.sql })}
-                    type="button"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-                <ToolbarButton accent onClick={handleRunQuery}>Run</ToolbarButton>
-                <InlineTextButton onClick={() => setShowSqlEditor(false)}>Close</InlineTextButton>
-              </div>
-            </div>
-            <div className="p-4">
-              <textarea
-                className="h-[420px] w-full border border-[var(--line)] bg-[var(--bg-editor)] p-3 font-mono text-[13px] leading-6 text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                onChange={(event) => updateActiveTab({ sql: event.target.value })}
-                spellCheck={false}
-                value={activeEditorTab.sql}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {showConnectionModal ? (
-        <div className="fixed inset-0 z-20 grid place-items-center bg-[rgba(0,0,0,0.42)] p-4">
-          <div className="w-full max-w-2xl border border-[var(--line)] bg-[var(--bg-elevated)]">
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-3">
-              <div className="text-sm font-medium text-[var(--text)]">{draft.id ? 'Edit connection' : 'New connection'}</div>
-              <InlineTextButton onClick={() => setShowConnectionModal(false)}>Close</InlineTextButton>
+        <div className="fixed inset-0 z-20 grid place-items-center bg-[rgba(0,0,0,0.2)] p-4">
+          <div className="w-full max-w-sm rounded border border-gray-300 bg-white shadow-lg">
+            <div className="border-b border-gray-300 px-5 py-3">
+              <div className="text-[13px] font-medium text-black">{draft.id ? 'Edit connection' : 'New connection'}</div>
             </div>
-            <div className="grid gap-4 p-5 md:grid-cols-2">
-              <Field label="Name"><input className="input" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
-              <Field label="Host"><input className="input" value={draft.host} onChange={(event) => setDraft((current) => ({ ...current, host: event.target.value }))} /></Field>
-              <Field label="Port"><input className="input" inputMode="numeric" value={String(draft.port)} onChange={(event) => setDraft((current) => ({ ...current, port: Number.parseInt(event.target.value || '5432', 10) }))} /></Field>
-              <Field label="Database"><input className="input" value={draft.database} onChange={(event) => setDraft((current) => ({ ...current, database: event.target.value }))} /></Field>
-              <Field label="User"><input className="input" value={draft.user} onChange={(event) => setDraft((current) => ({ ...current, user: event.target.value }))} /></Field>
-              <Field label="Password"><input className="input" type="password" value={draft.password} onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value }))} /></Field>
-            </div>
-            <div className="flex items-center justify-between border-t border-[var(--line)] px-5 py-3">
-              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
-                <input checked={persistConnection} onChange={() => setPersistConnection((current) => !current)} type="checkbox" />
-                Save locally
-              </label>
-              <div className="flex gap-2">
-                <InlineTextButton onClick={() => setShowConnectionModal(false)}>Cancel</InlineTextButton>
-                <ToolbarButton accent onClick={() => void handleConnect()}>{draft.id ? 'Save and connect' : 'Connect'}</ToolbarButton>
+            <div className="flex flex-col gap-4 p-5">
+              <div className="grid grid-cols-[1fr_120px] gap-4">
+                <Field label="Host"><input className="input" value={draft.host} onChange={(event) => setDraft((current) => ({ ...current, host: event.target.value }))} /></Field>
+                <Field label="Port"><input className="input" inputMode="numeric" value={String(draft.port)} onChange={(event) => setDraft((current) => ({ ...current, port: Number.parseInt(event.target.value || '5432', 10) }))} /></Field>
               </div>
+              <Field label="Authentication">
+                <select className="input text-gray-400" disabled>
+                  <option>User &amp; Password</option>
+                </select>
+              </Field>
+              <Field label="User"><input className="input" value={draft.user} onChange={(event) => setDraft((current) => ({ ...current, user: event.target.value }))} /></Field>
+              <div className="grid grid-cols-[1fr_160px] gap-4">
+                <Field label="Password"><input className="input" type="password" value={draft.password} onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value }))} /></Field>
+                <Field label="Save">
+                  <select className="input text-gray-400" disabled>
+                    <option>Forever</option>
+                  </select>
+                </Field>
+              </div>
+              <Field label="Database"><input className="input" value={draft.database} onChange={(event) => setDraft((current) => ({ ...current, database: event.target.value }))} /></Field>
+              <Field label="URL">
+                <div className="input bg-gray-50 text-gray-400">{`postgresql://${draft.user}@${draft.host}:${draft.port}/${draft.database}`}</div>
+              </Field>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-300 px-5 py-3">
+              <button className="rounded border border-gray-300 px-3 py-1.5 text-[12px] text-gray-500 hover:text-black" onClick={() => setShowConnectionModal(false)} type="button">Cancel</button>
+              <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-[12px] text-white hover:opacity-90" onClick={() => void handleConnect()} type="button">{draft.id ? 'Save and connect' : 'Connect'}</button>
             </div>
           </div>
         </div>
@@ -712,7 +730,7 @@ function ToolbarButton({ children, disabled, accent, danger, onClick }: PropsWit
           ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
           : danger
             ? 'border-[rgba(244,135,113,0.35)] text-[var(--danger)]'
-            : 'border-[var(--line)] bg-[var(--bg-input)] text-[var(--text)]',
+            : 'border-gray-300 bg-[var(--bg-input)] text-[var(--text)]',
       )}
       disabled={disabled}
       onClick={onClick}
@@ -725,7 +743,7 @@ function ToolbarButton({ children, disabled, accent, danger, onClick }: PropsWit
 
 function ToolbarIconButton({ children, onClick, title }: PropsWithChildren<{ onClick: () => void; title: string }>) {
   return (
-    <button className="grid h-6 w-6 place-items-center border border-transparent text-[12px] text-[var(--muted)] hover:border-[var(--line)] hover:bg-[var(--bg-input)]" onClick={onClick} title={title} type="button">
+    <button className="grid h-6 w-6 place-items-center border border-transparent text-[12px] text-[var(--muted)] hover:border-gray-300 hover:bg-[var(--bg-input)]" onClick={onClick} title={title} type="button">
       {children}
     </button>
   );
@@ -741,29 +759,29 @@ function InlineTextButton({ children, onClick }: PropsWithChildren<{ onClick: ()
 
 
 function ExplorerIcon({ children }: PropsWithChildren) {
-  return <span className="grid w-4 shrink-0 place-items-center text-[var(--muted)]">{children}</span>;
+  return <span className="grid w-4 shrink-0 place-items-center text-gray-500">{children}</span>;
 }
 
 
 function Field({ label, children }: PropsWithChildren<{ label: string }>) {
   return (
-    <label className="block text-sm text-[var(--muted)]">
-      <div className="mb-2 text-[11px] uppercase tracking-[0.08em]">{label}</div>
+    <label className="block text-[12px] text-gray-500">
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-black">{label}</div>
       {children}
     </label>
   );
 }
 
 function EmptyInline({ message }: { message: string }) {
-  return <div className="px-1 py-1 text-[var(--muted)]">{message}</div>;
+  return <div className="px-1 py-1 text-gray-500">{message}</div>;
 }
 
 function WorkspaceEmpty({ title, body }: { title: string; body: string }) {
   return (
-    <div className="grid min-h-[240px] place-items-center border border-dashed border-[var(--line)] bg-[rgba(255,255,255,0.02)] p-5 text-center">
+    <div className="grid min-h-[240px] place-items-center border border-dashed border-gray-300 bg-[rgba(255,255,255,0.02)] p-5 text-center">
       <div>
-        <div className="text-sm text-[var(--text)]">{title}</div>
-        <div className="mt-1 text-sm text-[var(--muted)]">{body}</div>
+        <div className="text-sm text-black">{title}</div>
+        <div className="mt-1 text-sm text-gray-500">{body}</div>
       </div>
     </div>
   );
@@ -789,10 +807,10 @@ function DatabaseTree({ connection, tree, onPreview }: { connection: ActiveConne
 
   return (
     <div className="overflow-auto">
-      <button className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-[var(--selection)]" onClick={() => setDbOpen((c) => !c)} type="button">
-        <span className="w-4 shrink-0 text-center text-[var(--muted)]">{dbOpen ? '▾' : '▸'}</span>
+      <button className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-blue-50" onClick={() => setDbOpen((c) => !c)} type="button">
+        <span className="w-4 shrink-0 text-center text-gray-500">{dbOpen ? '▾' : '▸'}</span>
         <ExplorerIcon><DatabaseIcon /></ExplorerIcon>
-        <span className="flex-1 truncate text-[var(--text)]">{connection.database}</span>
+        <span className="flex-1 truncate text-black">{connection.database}@{connection.host}</span>
       </button>
       {dbOpen ? (
         <div>
@@ -800,18 +818,23 @@ function DatabaseTree({ connection, tree, onPreview }: { connection: ActiveConne
             const schemaOpen = openSchemas[schema.name] ?? true;
             return (
               <div key={schema.name}>
-                <button className="flex w-full items-center gap-2 py-1 pl-8 pr-2 text-left hover:bg-[var(--selection)]" onClick={() => setOpenSchemas((current) => ({ ...current, [schema.name]: !schemaOpen }))} type="button">
-                  <span className="w-4 shrink-0 text-center text-[var(--muted)]">{schemaOpen ? '▾' : '▸'}</span>
+                <button className="flex w-full items-center gap-2 py-1 pl-8 pr-2 text-left hover:bg-blue-50" onClick={() => setOpenSchemas((current) => ({ ...current, [schema.name]: !schemaOpen }))} type="button">
+                  <span className="w-4 shrink-0 text-center text-gray-500">{schemaOpen ? '▾' : '▸'}</span>
                   <ExplorerIcon><FolderIcon /></ExplorerIcon>
-                  <span className="flex-1 truncate text-[var(--text)]">{schema.name}</span>
-                  <span className="shrink-0 text-[var(--muted)]">{schema.tables.length}</span>
+                  <span className="flex-1 truncate text-black">{schema.name}</span>
+                  <span className="shrink-0 text-gray-500">{schema.tables.length}</span>
                 </button>
                 {schemaOpen ? (
                   <div>
                     {schema.tables.map((table) => (
-                      <div className="flex items-center gap-2 pl-14 pr-2" key={`${schema.name}.${table.name}`}>
+                      <div
+                        className="flex cursor-grab items-center gap-2 pl-14 pr-2"
+                        draggable
+                        key={`${schema.name}.${table.name}`}
+                        onDragStart={(event) => { event.dataTransfer.setData('text/plain', `${schema.name}.${table.name}`); event.dataTransfer.effectAllowed = 'copy'; }}
+                      >
                         <ExplorerIcon><TableIcon /></ExplorerIcon>
-                        <button className="flex-1 truncate py-1 text-left text-[var(--text)] hover:bg-[var(--selection)]" onClick={() => void onPreview(schema.name, table.name)} type="button">
+                        <button className="flex-1 truncate py-1 text-left text-black hover:bg-blue-50" onClick={() => void onPreview(schema.name, table.name)} type="button">
                           {table.name}
                         </button>
                       </div>
@@ -840,23 +863,23 @@ function ResultsTable({
   rowOffset?: number;
 }) {
   return (
-    <div className="bg-[var(--bg-editor)]">
-      {result.notice ? <div className="border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--accent)]">{result.notice}</div> : null}
+    <div className="bg-white">
+      {result.notice ? <div className="border-b border-gray-300 bg-blue-50 px-4 py-2 text-sm text-blue-700">{result.notice}</div> : null}
       <div>
-        <table className="min-w-full border-collapse font-mono text-[12px]">
-          <thead className="sticky top-0 z-[1] bg-[var(--bg-tab)] text-left text-[var(--text-bright)]">
+        <table className="min-w-full border-collapse font-sans text-[12px]">
+          <thead className="sticky top-0 z-[1] bg-[#f0f0f0] text-left text-black">
             <tr>
-              <th className="w-12 border-b border-r border-[var(--line)] px-3 pt-4 pb-2 font-medium text-right">#</th>
+              <th className="w-12 border-b border-r border-gray-300 px-3 pt-4 pb-2 font-medium text-right">#</th>
               {result.columns.map((column, index) => (
-                <th className="relative border-b border-r border-[var(--line)] px-3 pt-4 pb-2 font-medium" key={column}>
+                <th className="relative border-b border-r border-gray-300 px-3 pt-4 pb-2 font-medium" key={column}>
                   <div className="flex items-center gap-1">
                     <button className="flex-1 text-left" onClick={() => onSort(index)} type="button">
                       {column}
                     </button>
-                    <span className="shrink-0 text-[var(--muted)]"><FilterIcon /></span>
-                    <button className="inline-flex shrink-0 flex-col leading-none text-[8px] text-[var(--muted)]" onClick={() => onSort(index)} type="button">
-                      <span className={sortState?.columnIndex === index && sortState.direction === 'asc' ? 'text-[var(--text-bright)]' : ''}>▲</span>
-                      <span className={sortState?.columnIndex === index && sortState.direction === 'desc' ? 'text-[var(--text-bright)]' : ''}>▼</span>
+                    <span className="shrink-0 text-gray-400"><FilterIcon /></span>
+                    <button className="inline-flex shrink-0 flex-col leading-none text-[8px] text-gray-400" onClick={() => onSort(index)} type="button">
+                      <span className={sortState?.columnIndex === index && sortState.direction === 'asc' ? 'text-black' : ''}>▲</span>
+                      <span className={sortState?.columnIndex === index && sortState.direction === 'desc' ? 'text-black' : ''}>▼</span>
                     </button>
                   </div>
                 </th>
@@ -866,9 +889,9 @@ function ResultsTable({
           <tbody>
             {result.rows.map((row, rowIndex) => (
               <tr key={`${rowIndex}-${row.join('|')}`}>
-                <td className="border-b border-r border-[var(--line)] px-3 py-2 text-right text-[var(--muted)]">{rowOffset + rowIndex + 1}</td>
+                <td className="border-b border-r border-gray-300 px-3 py-2 text-right text-gray-400">{rowOffset + rowIndex + 1}</td>
                 {row.map((cell, cellIndex) => (
-                  <td className="max-w-[400px] border-b border-r border-[var(--line)] px-3 py-2 text-[var(--muted)]" key={`${rowIndex}-${cellIndex}`}>
+                  <td className="max-w-[400px] border-b border-r border-gray-300 px-3 py-2 text-black" key={`${rowIndex}-${cellIndex}`}>
                     <div className="overflow-hidden text-ellipsis whitespace-nowrap">{cell}</div>
                   </td>
                 ))}

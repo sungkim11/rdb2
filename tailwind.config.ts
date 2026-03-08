@@ -30,8 +30,8 @@ const config: Config = {
         rise: 'rise 320ms ease-out forwards',
       },
       fontFamily: {
-        sans: ['"Avenir Next"', '"Segoe UI"', '"Helvetica Neue"', 'sans-serif'],
-        mono: ['"JetBrains Mono"', '"SFMono-Regular"', '"Menlo"', 'monospace'],
+        sans: ['var(--font-geist-sans)', 'sans-serif'],
+        mono: ['var(--font-geist-mono)', 'monospace'],
       },
     },
   },
