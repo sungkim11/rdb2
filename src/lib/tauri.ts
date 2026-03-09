@@ -1,4 +1,4 @@
-import type { AppSnapshot, ConnectionInput, QueryResult } from '@/lib/types';
+import type { AppSnapshot, ConnectionInput, DdlResult, QueryResult } from '@/lib/types';
 
 export function isTauriRuntime(): boolean {
   if (typeof window === 'undefined') {
@@ -30,4 +30,8 @@ export const tauriApi = {
     invokeCommand<QueryResult>('run_query', { sql, limit }),
   previewTable: (schema: string, table: string, limit = 200, offset = 0) =>
     invokeCommand<QueryResult>('preview_table', { schema, table, limit, offset }),
+  getTableDdl: (schema: string, table: string) =>
+    invokeCommand<DdlResult>('get_table_ddl', { schema, table }),
+  exportParquet: (schema: string, table: string, path: string) =>
+    invokeCommand<number>('export_parquet', { schema, table, path }),
 };

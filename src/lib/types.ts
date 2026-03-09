@@ -57,6 +57,10 @@ export interface AppSnapshot {
   databaseTree: SchemaNode[];
 }
 
+export interface DdlResult {
+  ddl: string;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: string[][];

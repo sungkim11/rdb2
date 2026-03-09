@@ -8,6 +8,7 @@ import type {
   ActiveConnectionSummary,
   AppSnapshot,
   ConnectionInput,
+  DdlResult,
   QueryResult,
   SafeSavedConnection,
   SchemaNode,
@@ -45,17 +46,42 @@ interface QueryHistoryEntry {
   resultMeta: string;
 }
 
-type TopMenu = 'file' | 'sql' | 'view' | null;
+type TopMenu = 'file' | 'view' | null;
 
 type EditorTab = {
   id: string;
-  kind: 'query' | 'table';
+  kind: 'query' | 'table' | 'ddl';
   title: string;
   sql: string;
   source?: { schema: string; table: string };
   sortState: SortState;
   currentPage: number;
   result: QueryResult | null;
+  ddlText?: string;
+};
+
+type ContextMenuState = {
+  x: number;
+  y: number;
+  schema: string;
+  table: string;
+} | null;
+
+type ConnectionContextMenuState = {
+  x: number;
+  y: number;
+  connection: SafeSavedConnection;
+} | null;
+
+type ConfirmDialogState = {
+  message: string;
+  onConfirm: () => void;
+} | null;
+
+type SqlTab = {
+  id: string;
+  title: string;
+  sql: string;
 };
 
 type SortState = {
@@ -73,6 +99,12 @@ function makeTabId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  return 'An unknown error occurred.';
+}
+
 export function AppShell() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>([]);
@@ -80,7 +112,8 @@ export function AppShell() {
   const [error, setError] = useState<string | null>(null);
   const [showConnectionModal, setShowConnectionModal] = useState(false);
   const [showSqlEditor, setShowSqlEditor] = useState(false);
-  const [sqlEditorText, setSqlEditorText] = useState('');
+  const [sqlTabs, setSqlTabs] = useState<SqlTab[]>([]);
+  const [activeSqlTabId, setActiveSqlTabId] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<TopMenu>(null);
   const [draft, setDraft] = useState<ConnectionInput>(EMPTY_CONNECTION);
   const [persistConnection, setPersistConnection] = useState(true);
@@ -91,6 +124,9 @@ export function AppShell() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [connectionsHeight, setConnectionsHeight] = useState(180);
   const [dragState, setDragState] = useState<DragState>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
+  const [connectionContextMenu, setConnectionContextMenu] = useState<ConnectionContextMenuState>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
 
   const activeEditorTab = useMemo(
     () => editorTabs.find((tab) => tab.id === activeEditorTabId) ?? editorTabs[0],
@@ -98,6 +134,44 @@ export function AppShell() {
   );
 
   const databaseTree = snapshot?.databaseTree ?? [];
+
+  const activeSqlTab = useMemo(
+    () => sqlTabs.find((t) => t.id === activeSqlTabId) ?? sqlTabs[0] ?? null,
+    [activeSqlTabId, sqlTabs],
+  );
+
+  const sqlEditorText = activeSqlTab?.sql ?? '';
+  const setSqlEditorText = (text: string) => {
+    if (!activeSqlTab) return;
+    setSqlTabs((tabs) => tabs.map((t) => (t.id === activeSqlTab.id ? { ...t, sql: text } : t)));
+  };
+
+  function openSqlEditor() {
+    setShowSqlEditor(true);
+    if (sqlTabs.length === 0) addSqlTab();
+  }
+
+  function addSqlTab() {
+    const id = makeTabId('sql');
+    const num = sqlTabs.length + 1;
+    setSqlTabs((tabs) => [...tabs, { id, title: `Query ${num}`, sql: '' }]);
+    setActiveSqlTabId(id);
+  }
+
+  function closeSqlTab(id: string) {
+    setSqlTabs((tabs) => {
+      const next = tabs.filter((t) => t.id !== id);
+      if (next.length === 0) {
+        setShowSqlEditor(false);
+        setActiveSqlTabId(null);
+        setEditorTabs([]);
+        setActiveEditorTabId(null);
+      } else if (activeSqlTabId === id) {
+        setActiveSqlTabId(next[next.length - 1]?.id ?? null);
+      }
+      return next;
+    });
+  }
 
   const processedResult = useMemo(() => {
     const result = activeEditorTab?.result;
@@ -185,7 +259,7 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Failed to load app state.');
+      setError(errorMessage(err));
     }
   }
 
@@ -221,7 +295,7 @@ export function AppShell() {
       },
     ]);
     setActiveEditorTabId(id);
-    setShowSqlEditor(true);
+    openSqlEditor();
     setOpenMenu(null);
   }
 
@@ -336,7 +410,7 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Connection failed.');
+      setError(errorMessage(err));
     }
   }
 
@@ -349,7 +423,7 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Connection failed.');
+      setError(errorMessage(err));
     }
   }
 
@@ -361,7 +435,7 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Delete failed.');
+      setError(errorMessage(err));
     }
   }
 
@@ -374,7 +448,7 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Disconnect failed.');
+      setError(errorMessage(err));
     }
   }
 
@@ -420,7 +494,25 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Query failed.');
+      setError(errorMessage(err));
+    }
+  }
+
+  async function handleSaveAs() {
+    const text = sqlEditorText.trim();
+    if (!text) return;
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+      const path = await save({
+        defaultPath: 'query.sql',
+        filters: [{ name: 'SQL Files', extensions: ['sql'] }],
+      });
+      if (path) {
+        await writeTextFile(path, text);
+      }
+    } catch (err) {
+      setError(errorMessage(err));
     }
   }
 
@@ -444,12 +536,100 @@ export function AppShell() {
       setLoading('');
     } catch (err) {
       setLoading('');
-      setError(err instanceof Error ? err.message : 'Preview failed.');
+      setError(errorMessage(err));
+    }
+  }
+
+  async function handleExportTable(schema: string, table: string) {
+    try {
+      setLoading(`Exporting ${schema}.${table}...`);
+      setError(null);
+      const result = await tauriApi.previewTable(schema, table, 10000, 0);
+      const header = result.columns;
+      const csv = [header, ...result.rows]
+        .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
+        .join('\n');
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+      const path = await save({
+        defaultPath: `${schema}.${table}.csv`,
+        filters: [{ name: 'CSV Files', extensions: ['csv'] }],
+      });
+      if (path) {
+        await writeTextFile(path, csv);
+      }
+      setLoading('');
+    } catch (err) {
+      setLoading('');
+      setError(errorMessage(err));
+    }
+  }
+
+  async function handleExportParquet(schema: string, table: string) {
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const path = await save({
+        defaultPath: `${schema}.${table}.parquet`,
+        filters: [{ name: 'Parquet Files', extensions: ['parquet'] }],
+      });
+      if (!path) return;
+      setLoading(`Exporting ${schema}.${table} to Parquet...`);
+      setError(null);
+      const rowCount = await tauriApi.exportParquet(schema, table, path);
+      setLoading('');
+      setError(null);
+      // Brief success feedback
+      setLoading(`Exported ${rowCount} rows to Parquet.`);
+      setTimeout(() => setLoading(''), 3000);
+    } catch (err) {
+      setLoading('');
+      setError(errorMessage(err));
+    }
+  }
+
+  async function handleShowDdl(schema: string, table: string) {
+    try {
+      setLoading(`Loading DDL for ${schema}.${table}...`);
+      setError(null);
+      const result = await tauriApi.getTableDdl(schema, table);
+
+      const existing = editorTabs.find((tab) => tab.kind === 'ddl' && tab.source?.schema === schema && tab.source?.table === table);
+      if (existing) {
+        setEditorTabs((current) =>
+          current.map((tab) =>
+            tab.id === existing.id
+              ? { ...tab, ddlText: result.ddl, title: `${table} DDL` }
+              : tab,
+          ),
+        );
+        setActiveEditorTabId(existing.id);
+      } else {
+        const id = makeTabId('ddl');
+        setEditorTabs((current) => [
+          ...current,
+          {
+            id,
+            kind: 'ddl',
+            title: `${table} DDL`,
+            sql: '',
+            source: { schema, table },
+            result: null,
+            sortState: null,
+            currentPage: 0,
+            ddlText: result.ddl,
+          },
+        ]);
+        setActiveEditorTabId(id);
+      }
+      setLoading('');
+    } catch (err) {
+      setLoading('');
+      setError(errorMessage(err));
     }
   }
 
   return (
-    <main className="h-screen bg-white text-[13px] text-black" onClick={() => { if (openMenu) setOpenMenu(null); }}>
+    <main className="h-screen bg-white text-[13px] text-black" onClick={() => { if (openMenu) setOpenMenu(null); setContextMenu(null); setConnectionContextMenu(null); }}>
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="relative shrink-0 border-b border-gray-300 bg-[#0f1a2e]">
           <div className="flex h-9 items-center justify-between px-3">
@@ -459,7 +639,7 @@ export function AppShell() {
               </div>
               <div className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
                 <MenuButton active={openMenu === 'file'} label="File" onClick={() => setOpenMenu((current) => (current === 'file' ? null : 'file'))} />
-                <MenuButton active={openMenu === 'sql'} label="SQL" onClick={() => setOpenMenu((current) => (current === 'sql' ? null : 'sql'))} />
+                <MenuButton active={false} label="SQL Editor" onClick={() => { openSqlEditor(); setOpenMenu(null); }} />
                 <MenuButton active={openMenu === 'view'} label="View" onClick={() => setOpenMenu((current) => (current === 'view' ? null : 'view'))} />
               </div>
             </div>
@@ -472,7 +652,7 @@ export function AppShell() {
           <div className="flex items-center gap-1 bg-[#1e3a5f] px-3 py-1 text-[var(--muted)]">
             <ToolbarIconButton onClick={openNewConnectionModal} title="New connection"><PlusIcon /></ToolbarIconButton>
             <ToolbarIconButton onClick={() => openNewQueryTab()} title="New query"><QueryIcon /></ToolbarIconButton>
-            <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+            <ToolbarIconButton onClick={() => openSqlEditor()} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
             <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
             <ToolbarIconButton onClick={() => { exportCurrentResult(); }} title="Export CSV"><ExportIcon /></ToolbarIconButton>
           </div>
@@ -481,16 +661,7 @@ export function AppShell() {
             <div className="absolute left-16 top-9 z-10 min-w-[220px] border border-gray-300 bg-[#252526] shadow-[0_8px_24px_rgba(0,0,0,0.45)]" onClick={(event) => event.stopPropagation()}>
               {openMenu === 'file' ? (
                 <MenuPanel>
-                  <MenuItem label="New Connection" shortcut="Ctrl+N" onClick={openNewConnectionModal} />
-                  <MenuItem label="New Query" shortcut="Ctrl+T" onClick={() => openNewQueryTab()} />
                   <MenuItem label="Exit" onClick={() => void handleExit()} />
-                </MenuPanel>
-              ) : null}
-              {openMenu === 'sql' ? (
-                <MenuPanel>
-                  <MenuItem label="Open SQL Editor" shortcut="Ctrl+L" onClick={() => { setShowSqlEditor(true); setOpenMenu(null); }} />
-                  <MenuItem label="Run Active Query" shortcut="Ctrl+Enter" onClick={() => void handleRunQuery()} />
-                  <MenuItem label="Disconnect" onClick={() => void handleDisconnect()} />
                 </MenuPanel>
               ) : null}
               {openMenu === 'view' ? (
@@ -516,7 +687,7 @@ export function AppShell() {
                     {snapshot.savedConnections.map((connection) => {
                       const active = snapshot.activeConnection?.id === connection.id;
                       return (
-                        <div className="group flex items-center gap-2 px-1 py-1" key={connection.id} onContextMenu={(event) => { event.preventDefault(); openEditConnectionModal(connection); }}>
+                        <div className="group flex items-center gap-2 px-1 py-1" key={connection.id} onContextMenu={(event) => { event.preventDefault(); setConnectionContextMenu({ x: event.clientX, y: event.clientY, connection }); }}>
                           <ExplorerIcon><ConnectionIcon active={active} /></ExplorerIcon>
                           <button className="min-w-0 flex-1 truncate text-left text-black" onClick={() => void handleActivate(connection)} type="button">
                             {`${connection.database}@${connection.host}`}
@@ -538,7 +709,7 @@ export function AppShell() {
                 <div className="text-[13px] font-medium text-black">Explorer</div>
                 <div className="flex items-center gap-1 text-gray-500">
                   <ToolbarIconButton onClick={() => void refresh()} title="Refresh"><RefreshIcon /></ToolbarIconButton>
-                  <ToolbarIconButton onClick={() => setShowSqlEditor(true)} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
+                  <ToolbarIconButton onClick={() => openSqlEditor()} title="Open SQL editor"><PanelIcon /></ToolbarIconButton>
                 </div>
               </div>
               <div className="sidebar-scroll min-h-0 flex-1 overflow-y-scroll px-2 py-2">
@@ -547,6 +718,10 @@ export function AppShell() {
                     connection={snapshot.activeConnection}
                     tree={databaseTree}
                     onPreview={handlePreviewTable}
+                    onTableContextMenu={(event, schema, table) => {
+                      event.preventDefault();
+                      setContextMenu({ x: event.clientX, y: event.clientY, schema, table });
+                    }}
                   />
                 ) : (
                   <EmptyInline message="Connect to browse schema" />
@@ -559,19 +734,65 @@ export function AppShell() {
 
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             {showSqlEditor ? (
-              <div className="flex h-1/3 shrink-0 flex-col overflow-hidden rounded border border-gray-300 bg-white">
+              <div className="flex h-[38%] shrink-0 flex-col overflow-hidden rounded border border-gray-300 bg-white">
                 <div className="flex items-center justify-between rounded-t border-b border-gray-300 bg-white px-3 py-2">
                   <div className="text-[13px] font-medium text-black">SQL Editor</div>
-                  <div className="flex items-center gap-2">
-                    <button className="rounded bg-[var(--accent)] px-3 py-1 text-[12px] text-white hover:opacity-90" onClick={() => void handleRunQuery(sqlEditorText)} type="button">Run</button>
-                    <button className="text-[12px] text-gray-500 hover:text-black" onClick={() => setShowSqlEditor(false)} type="button">Close</button>
+                  <button className="px-1 py-0.5 text-[12px] leading-tight text-gray-500 hover:text-black" onClick={() => { setShowSqlEditor(false); setSqlTabs([]); setActiveSqlTabId(null); setEditorTabs([]); setActiveEditorTabId(null); }} type="button">Close</button>
+                </div>
+                <div className="flex items-center border-b border-gray-300 bg-white px-1 pt-1">
+                  <div className="flex min-w-0 flex-1 overflow-auto">
+                    {sqlTabs.map((tab) => (
+                      <button
+                        className={classNames(
+                          'group flex min-w-[100px] max-w-[200px] items-center gap-2 border-r border-gray-300 px-3 py-1.5 text-left',
+                          tab.id === activeSqlTab?.id ? 'bg-[#f0f0f0] text-black' : 'bg-white text-gray-500',
+                        )}
+                        key={tab.id}
+                        onClick={() => setActiveSqlTabId(tab.id)}
+                        type="button"
+                      >
+                        <span className="text-[11px] text-gray-500"><QueryIcon /></span>
+                        <span className="truncate text-[12px]">{tab.title}</span>
+                        <span
+                          role="button"
+                          tabIndex={-1}
+                          className="ml-auto shrink-0 cursor-pointer px-1 text-gray-500 hover:text-black"
+                          onPointerDown={(event) => { event.stopPropagation(); event.preventDefault(); closeSqlTab(tab.id); }}
+                        >
+                          ×
+                        </span>
+                      </button>
+                    ))}
+                    <button className="px-2 py-1 text-[18px] font-bold text-gray-400 hover:text-black" onClick={addSqlTab} type="button" title="New tab">+</button>
                   </div>
                 </div>
-                <SqlEditor
-                  value={sqlEditorText}
-                  onChange={setSqlEditorText}
-                  onRun={(text) => void handleRunQuery(text)}
-                />
+                <div className="flex min-h-0 flex-1">
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <div className="flex items-center gap-3 border-b border-gray-300 px-2 py-1">
+                      <button className="rounded bg-[var(--accent)] px-3 py-0.5 text-[12px] leading-tight text-white hover:opacity-90" onClick={() => void handleRunQuery(sqlEditorText)} type="button">Run</button>
+                      <button className="px-1 py-0.5 text-[12px] leading-tight text-gray-500 hover:text-black" onClick={() => void handleSaveAs()} type="button">Save As</button>
+                    </div>
+                    <SqlEditor
+                      value={sqlEditorText}
+                      onChange={setSqlEditorText}
+                      onRun={(text) => void handleRunQuery(text)}
+                    />
+                  </div>
+                  <div className="flex w-[270px] shrink-0 flex-col gap-1 overflow-y-auto border-l border-gray-300 px-2 py-1">
+                    <span className="text-[12px] font-medium text-gray-500">History</span>
+                    {queryHistory.map((entry) => (
+                      <button
+                        key={entry.id}
+                        className="rounded bg-gray-100 px-2 py-1 text-left text-[12px] text-gray-600 hover:bg-gray-200 hover:text-black"
+                        onClick={() => setSqlEditorText(entry.sql)}
+                        title={entry.sql}
+                        type="button"
+                      >
+                        <div className="line-clamp-2 break-all">{entry.sql}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : null}
 
@@ -594,7 +815,7 @@ export function AppShell() {
                       type="button"
                     >
                       <span className="text-[11px] text-gray-500">
-                        {tab.kind === 'table' ? <TableIcon /> : <QueryIcon />}
+                        {tab.kind === 'table' ? <TableIcon /> : tab.kind === 'ddl' ? <DdlIcon /> : <QueryIcon />}
                       </span>
                       <span className="truncate font-sans text-[12px]">
                         {tab.title}
@@ -614,7 +835,11 @@ export function AppShell() {
               </div>
 
               <div className="flex min-h-0 flex-1 flex-col">
-                {processedResult ? (
+                {activeEditorTab?.kind === 'ddl' && activeEditorTab.ddlText ? (
+                  <div className="min-h-0 flex-1 overflow-auto bg-white p-4">
+                    <pre className="font-mono text-[13px] leading-relaxed text-black whitespace-pre">{activeEditorTab.ddlText}</pre>
+                  </div>
+                ) : processedResult ? (
                   <>
                     <div className="min-h-0 flex-1 overflow-scroll bg-white">
                       <ResultsTable
@@ -648,6 +873,109 @@ export function AppShell() {
         </footer>
       </div>
 
+      {contextMenu ? (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={() => setContextMenu(null)}
+          onContextMenu={(event) => { event.preventDefault(); setContextMenu(null); }}
+        >
+          <div
+            className="absolute min-w-[180px] border border-gray-300 bg-white py-1 shadow-lg"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-black hover:bg-blue-50"
+              onClick={() => {
+                const { schema, table } = contextMenu;
+                setContextMenu(null);
+                void handleShowDdl(schema, table);
+              }}
+              type="button"
+            >
+              <span className="text-gray-500"><QueryIcon /></span>
+              Show DDL
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-black hover:bg-blue-50"
+              onClick={() => {
+                const { schema, table } = contextMenu;
+                setContextMenu(null);
+                void handleExportTable(schema, table);
+              }}
+              type="button"
+            >
+              <span className="text-gray-500"><ExportIcon /></span>
+              Export CSV
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-black hover:bg-blue-50"
+              onClick={() => {
+                const { schema, table } = contextMenu;
+                setContextMenu(null);
+                void handleExportParquet(schema, table);
+              }}
+              type="button"
+            >
+              <span className="text-gray-500"><ExportIcon /></span>
+              Export Parquet
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {connectionContextMenu ? (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={() => setConnectionContextMenu(null)}
+          onContextMenu={(event) => { event.preventDefault(); setConnectionContextMenu(null); }}
+        >
+          <div
+            className="absolute min-w-[160px] border border-gray-300 bg-white py-1 shadow-lg"
+            style={{ left: connectionContextMenu.x, top: connectionContextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-black hover:bg-blue-50"
+              onClick={() => {
+                const conn = connectionContextMenu.connection;
+                setConnectionContextMenu(null);
+                openEditConnectionModal(conn);
+              }}
+              type="button"
+            >
+              Edit
+            </button>
+            <button
+              className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-black hover:bg-blue-50"
+              onClick={() => {
+                const conn = connectionContextMenu.connection;
+                setConnectionContextMenu(null);
+                setConfirmDialog({
+                  message: `Disconnect from ${conn.database}@${conn.host}?`,
+                  onConfirm: () => { setConfirmDialog(null); void handleDisconnect(); },
+                });
+              }}
+              type="button"
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmDialog ? (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-[rgba(0,0,0,0.2)] p-4">
+          <div className="w-full max-w-xs rounded border border-gray-300 bg-white shadow-lg">
+            <div className="px-5 py-4 text-[13px] text-black">{confirmDialog.message}</div>
+            <div className="flex justify-end gap-2 border-t border-gray-300 px-5 py-3">
+              <button className="rounded px-3 py-1 text-[12px] text-gray-500 hover:text-black" onClick={confirmDialog.onConfirm} type="button">Yes</button>
+              <button autoFocus className="rounded bg-[var(--accent)] px-3 py-1 text-[12px] text-white hover:opacity-90 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]" onClick={() => setConfirmDialog(null)} type="button">No</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showConnectionModal ? (
         <div className="fixed inset-0 z-20 grid place-items-center bg-[rgba(0,0,0,0.2)] p-4">
           <div className="w-full max-w-sm rounded border border-gray-300 bg-white shadow-lg">
@@ -680,7 +1008,7 @@ export function AppShell() {
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-gray-300 px-5 py-3">
               <button className="rounded border border-gray-300 px-3 py-1.5 text-[12px] text-gray-500 hover:text-black" onClick={() => setShowConnectionModal(false)} type="button">Cancel</button>
-              <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-[12px] text-white hover:opacity-90" onClick={() => void handleConnect()} type="button">{draft.id ? 'Save and connect' : 'Connect'}</button>
+              <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-[12px] text-white hover:opacity-90" onClick={() => void handleConnect()} type="button">{draft.id ? 'Save' : 'Connect'}</button>
             </div>
           </div>
         </div>
@@ -789,7 +1117,7 @@ function WorkspaceEmpty({ title, body }: { title: string; body: string }) {
 
 
 
-function DatabaseTree({ connection, tree, onPreview }: { connection: ActiveConnectionSummary; tree: SchemaNode[]; onPreview: (schema: string, table: string) => Promise<void>; }) {
+function DatabaseTree({ connection, tree, onPreview, onTableContextMenu }: { connection: ActiveConnectionSummary; tree: SchemaNode[]; onPreview: (schema: string, table: string) => Promise<void>; onTableContextMenu: (event: React.MouseEvent, schema: string, table: string) => void; }) {
   const [dbOpen, setDbOpen] = useState(true);
   const [openSchemas, setOpenSchemas] = useState<Record<string, boolean>>({});
 
@@ -832,6 +1160,7 @@ function DatabaseTree({ connection, tree, onPreview }: { connection: ActiveConne
                         draggable
                         key={`${schema.name}.${table.name}`}
                         onDragStart={(event) => { event.dataTransfer.setData('text/plain', `${schema.name}.${table.name}`); event.dataTransfer.effectAllowed = 'copy'; }}
+                        onContextMenu={(event) => onTableContextMenu(event, schema.name, table.name)}
                       >
                         <ExplorerIcon><TableIcon /></ExplorerIcon>
                         <button className="flex-1 truncate py-1 text-left text-black hover:bg-blue-50" onClick={() => void onPreview(schema.name, table.name)} type="button">
@@ -916,6 +1245,7 @@ function TableIcon() { return <IconBase><rect x="2.5" y="3" width="11" height="1
 function QueryIcon() { return <IconBase><path d="M4 4.5h8M4 8h8M4 11.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></IconBase>; }
 function ExportIcon() { return <IconBase><path d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 12.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></IconBase>; }
 function FilterIcon() { return <IconBase><path d="M2.5 3.5h11L9 8.5v4l-2 1.5v-5.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></IconBase>; }
+function DdlIcon() { return <IconBase><path d="M4 3h5.5L12 5.5V13H4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /><path d="M9.5 3v2.5H12" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /><path d="M6 8h4M6 10h3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" /></IconBase>; }
 
 
 function summarizeSql(sql: string) {

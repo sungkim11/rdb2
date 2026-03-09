@@ -1,6 +1,6 @@
 use tauri::{AppHandle, State};
 
-use crate::models::{AppSnapshot, ConnectionInput, QueryResult, SafeSavedConnection, SavedConnection};
+use crate::models::{AppSnapshot, ConnectionInput, DdlResult, QueryResult, SafeSavedConnection, SavedConnection};
 use crate::state::AppState;
 use crate::{postgres, storage};
 
@@ -153,4 +153,38 @@ pub fn preview_table(
         limit.unwrap_or(200),
         offset.unwrap_or(0),
     )
+}
+
+#[tauri::command]
+pub fn get_table_ddl(
+    state: State<'_, AppState>,
+    schema: String,
+    table: String,
+) -> Result<DdlResult, String> {
+    let connection = state
+        .active_connection
+        .lock()
+        .map_err(|_| String::from("failed to acquire active connection state"))?
+        .clone()
+        .ok_or_else(|| String::from("no active database connection"))?;
+
+    let ddl = postgres::get_table_ddl(&connection, &schema, &table)?;
+    Ok(DdlResult { ddl })
+}
+
+#[tauri::command]
+pub fn export_parquet(
+    state: State<'_, AppState>,
+    schema: String,
+    table: String,
+    path: String,
+) -> Result<usize, String> {
+    let connection = state
+        .active_connection
+        .lock()
+        .map_err(|_| String::from("failed to acquire active connection state"))?
+        .clone()
+        .ok_or_else(|| String::from("no active database connection"))?;
+
+    postgres::export_parquet(&connection, &schema, &table, &path)
 }

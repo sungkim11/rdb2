@@ -13,9 +13,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.2.0", features = [] }
 
 [dependencies]
+arrow-array = "58.0.0"
+arrow-schema = "58.0.0"
 chrono = { version = "0.4.40", features = ["serde"] }
+parquet = { version = "58.0.0", features = ["arrow"] }
 postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tauri = { version = "2.3.1", features = [] }
+tauri-plugin-dialog = "2.6.0"
+tauri-plugin-fs = "2.4.5"
 uuid = { version = "1.16.0", features = ["serde", "v4"] }

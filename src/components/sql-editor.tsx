@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
-import { EditorView, keymap, placeholder as cmPlaceholder, dropCursor, lineNumbers } from '@codemirror/view';
+import { useEffect, useRef } from 'react';
+import { EditorView, keymap, placeholder as cmPlaceholder, lineNumbers } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { sql, PostgreSQL } from '@codemirror/lang-sql';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -92,9 +92,18 @@ export function SqlEditor({ value, onChange, onRun }: SqlEditorProps) {
         lineNumbers(),
         lightTheme,
         cmPlaceholder('Enter SQL query...'),
-        dropCursor(),
         updateListener,
         EditorView.lineWrapping,
+        EditorView.domEventHandlers({
+          drop(event, view) {
+            const tableName = event.dataTransfer?.getData('text/plain');
+            if (!tableName) return false;
+            event.preventDefault();
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
+            view.dispatch({ changes: { from: pos, insert: tableName } });
+            return true;
+          },
+        }),
       ],
     });
 
@@ -122,25 +131,10 @@ export function SqlEditor({ value, onChange, onRun }: SqlEditorProps) {
     }
   }, [value]);
 
-  const handleDrop = useCallback(
-    (event: React.DragEvent) => {
-      const tableName = event.dataTransfer.getData('text/plain');
-      if (!tableName) return;
-      event.preventDefault();
-      const view = viewRef.current;
-      if (!view) return;
-      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
-      view.dispatch({ changes: { from: pos, insert: tableName } });
-    },
-    [],
-  );
-
   return (
     <div
       ref={containerRef}
       className="min-h-0 flex-1 overflow-auto"
-      onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
-      onDrop={handleDrop}
     />
   );
 }
