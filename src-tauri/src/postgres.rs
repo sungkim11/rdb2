@@ -393,7 +393,9 @@ pub fn export_parquet(
     let batch = RecordBatch::try_new(arrow_schema.clone(), arrays)
         .map_err(|e| format!("failed to create record batch: {e}"))?;
 
-    let file = File::create(path).map_err(|e| format!("failed to create file: {e}"))?;
+    let output_path = normalize_output_path(path)?;
+    let file = File::create(&output_path)
+        .map_err(|e| format!("failed to create file {}: {e}", output_path.display()))?;
     let mut writer = ArrowWriter::try_new(file, arrow_schema, None)
         .map_err(|e| format!("failed to create parquet writer: {e}"))?;
 
@@ -405,6 +407,18 @@ pub fn export_parquet(
         .map_err(|e| format!("failed to close parquet writer: {e}"))?;
 
     Ok(row_count)
+}
+
+fn normalize_output_path(path: &str) -> Result<std::path::PathBuf, String> {
+    if let Ok(url) = url::Url::parse(path) {
+        if url.scheme() == "file" {
+            return url
+                .to_file_path()
+                .map_err(|_| format!("invalid file path from save dialog: {path}"));
+        }
+    }
+
+    Ok(std::path::PathBuf::from(path))
 }
 
 fn connect(connection: &SavedConnection) -> Result<Client, String> {
